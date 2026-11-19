@@ -42,7 +42,8 @@
     "test:saltpack:go": "mocha test/interops/go-saltpack-compatibility.test.ts",
     "test:security:vectors": "tsx test/interops/generate-security-v2-vectors.ts",
     "test:service:vectors": "tsx test/interops/generate-service-identity-vectors.ts",
-    "test:channel:vectors": "tsx test/interops/generate-xwing-channel-vectors.ts"
+    "test:channel:vectors": "tsx test/interops/generate-xwing-channel-vectors.ts",
+    "test:anchor:vectors": "tsx test/interops/generate-service-anchor-vectors.ts"
   },
   "keywords": [],
   "author": "",
