@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Monorepo with three implementations of the same identity library, two add-on packages and shared specs:
 
 - `typescript/` — reference implementation, published to npm as `@vaultys/id`. **All pnpm commands must be run from this directory**, not the repo root (there is no root `package.json`).
-- `go/` — Go implementation (`github.com/vaultys/vaultysid/go`, library + `vaultysid-cli`), Go 1.25 (`go.mod`). Run `go vet ./...` and `go test ./...` from `go/`.
+- `go/` — Go implementation (`github.com/vaultys/vaultysid/go`, library + `vaultysid-cli`), Go 1.26 (`go.mod`, required by `golang.org/x/crypto`). Run `go vet ./...` and `go test ./...` from `go/`.
 - `rust/` — native implementation (crate `vaultysid`), must stay byte-compatible with TypeScript. Run all cargo commands from `rust/`. It does not implement all of 4.0 yet (see "Conventions that matter").
 - `kmip/` — optional Node.js adapter (`@vaultys/id-kmip`) that delegates Ed25519 signing to a KMIP endpoint.
 - `passport-nfc/` — optional desktop and mobile NFC reader for passport identities (type `0x05`).
@@ -72,9 +72,11 @@ Platform differences are isolated in `typescript/src/platform/` (`node.ts` vs `b
 - TypeScript imports `Buffer` from the `buffer/` npm shim (not Node's global) so browser and Node builds behave identically. Normalize `Uint8Array` inputs with `Buffer.from()` at API boundaries.
 - Anything touching serialization, signatures, or the challenge format is a **cross-implementation contract**: change TypeScript first, regenerate vectors, then update Go and Rust, then run the interop scripts. Deterministic vectors shared with Go and Rust come from `pnpm test:security:vectors` (and `pnpm test:pq:vectors` where the post-quantum vectors are present); `pnpm test:service:vectors`, `pnpm test:anchor:vectors` and `pnpm test:channel:vectors` cover service identities, service anchors and the X-Wing channel, and copy their files to `go/test/compatibility/testdata` and `rust/tests/data` (Go: `pkg/serviceid`, `pkg/xwingchannel`; Rust: `service_identity.rs`, `xwing_channel.rs`). `pnpm test:compatibility:export` creates random identities and is not a deterministic vector source.
 - Rust does not implement all of 4.0 (no `VAULTYS_HANDSHAKE_V1` / `VAULTYS_RAW` domains, no DHIES v2, no hybrid identities); `rust/tests/data/security-v2-vectors.json` is not read by any Rust test, and the `interops/` scripts are expected to fail until it does.
-- CI: TypeScript, Rust and Go run on pushes to `main` and on pull requests to `main` and `dev`. The Rust MSRV job installs 1.91 while `Cargo.toml` declares `rust-version = "1.90"`.
+- CI: TypeScript, Rust and Go run on pushes to `main` and on pull requests to `main` and `dev`. The Rust MSRV is 1.94 (`rust-version` and the CI job): `libcrux-platform`, pulled in by `libcrux-ml-dsa`, does not compile on 1.93 or older.
 - `VaultysId.fromEntropy` (TypeScript, Go, Rust) requires exactly 32 bytes; TypeScript copies the buffer so the caller keeps its own.
 - `DeprecatedKeyManager` exists in both TypeScript (`src/KeyManager/DeprecatedKeyManager.ts`, exported) and Rust: it is the migration path for old wallets.
 - Backward compatibility with v0/v2 identities is tested against the real published package (`@vaultys/id_2` devDependency) in `test/backward_compat/` and `test/v0tov1.test.ts` — keep migration paths in `src/utils/migration.ts` working.
 - Post-quantum and WebAuthn key generation are async in both languages; Ed25519-only paths may be sync.
+- TypeScript is compiled with TypeScript 7 (native `tsc`, no JavaScript API): webpack uses `esbuild-loader`, not `ts-loader`, and type checking happens in `build:node`.
+- `@stricahq/bip32ed25519` stays on 1.x: `DeprecatedKeyManager` derives `"/0'"` through `derive(NaN)`, which 1.x treats as hardened index 0 and 2.x refuses. `test/deprecatedDerivation.test.ts` pins these keys against the published 2.4.10 package.
 - `typescript/tsconfig.json` is strict and only compiles `index.ts` + `src/**` — tests run through `tsx` and are not part of the build.
