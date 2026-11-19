@@ -5,7 +5,9 @@ pub mod file_storage;
 pub mod id_manager;
 pub mod key_manager;
 pub mod memory_channel;
+pub mod service_identity;
 pub mod vaultys_id;
+pub mod xwing_channel;
 
 pub use challenger::{ChallengeType, Challenger};
 pub use error::{Error, Result};
