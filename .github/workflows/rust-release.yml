@@ -14,10 +14,9 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
       version: ${{ steps.get_version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Get version from tag
         id: get_version
@@ -29,12 +28,10 @@ jobs:
 
       - name: Create Release
         id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.ref }}
-          release_name: VaultysId Rust ${{ steps.get_version.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          name: VaultysId Rust ${{ steps.get_version.outputs.version }}
           draft: false
           prerelease: ${{ contains(steps.get_version.outputs.version, '-') }}
           body: |
@@ -72,7 +69,7 @@ jobs:
             target: aarch64-apple-darwin
             artifact_name: vaultysid-macos-aarch64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -110,56 +107,30 @@ jobs:
           cd ..\..\..\
           (Get-FileHash ${{ matrix.artifact_name }}.zip -Algorithm SHA256).Hash | Out-File -FilePath "${{ matrix.artifact_name }}.zip.sha256"
 
-      - name: Upload tarball
+      - name: Upload tarball and checksum
         if: runner.os != 'Windows'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v3
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./rust/${{ matrix.artifact_name }}.tar.gz
-          asset_name: ${{ matrix.artifact_name }}.tar.gz
-          asset_content_type: application/gzip
+          tag_name: ${{ github.ref_name }}
+          files: |
+            ./rust/${{ matrix.artifact_name }}.tar.gz
+            ./rust/${{ matrix.artifact_name }}.tar.gz.sha256
 
-      - name: Upload tarball checksum
-        if: runner.os != 'Windows'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./rust/${{ matrix.artifact_name }}.tar.gz.sha256
-          asset_name: ${{ matrix.artifact_name }}.tar.gz.sha256
-          asset_content_type: text/plain
-
-      - name: Upload zip
+      - name: Upload zip and checksum
         if: runner.os == 'Windows'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v3
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./rust/${{ matrix.artifact_name }}.zip
-          asset_name: ${{ matrix.artifact_name }}.zip
-          asset_content_type: application/zip
-
-      - name: Upload zip checksum
-        if: runner.os == 'Windows'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./rust/${{ matrix.artifact_name }}.zip.sha256
-          asset_name: ${{ matrix.artifact_name }}.zip.sha256
-          asset_content_type: text/plain
+          tag_name: ${{ github.ref_name }}
+          files: |
+            ./rust/${{ matrix.artifact_name }}.zip
+            ./rust/${{ matrix.artifact_name }}.zip.sha256
 
   publish-crate:
     name: Publish to crates.io
     needs: [create-release, build-artifacts]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
