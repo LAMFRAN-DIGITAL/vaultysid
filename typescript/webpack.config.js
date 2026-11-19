@@ -17,7 +17,8 @@ module.exports = {
     rules: [
       {
         test: /\.ts$/,
-        use: "ts-loader",
+        loader: "esbuild-loader",
+        options: { target: "es2021" },
       },
     ],
   },

@@ -3,7 +3,7 @@ const webpack = require("webpack");
 
 module.exports = {
   mode: "development",
-  entry: ["./test/shims.ts", "./test/pqc.test.ts", "./test/pqcManager.web.test.ts", "./test/hybridManager.web.test.ts", "./test/challenger.test.ts", "./test/file.browser_test.ts", "./test/channel.test.ts", "./test/idManager.test.ts", "./test/saltpack.test.ts", "./test/softCredentials.test.ts", "./test/v0toV1.test.ts", "./test/keymanager.test.ts", "./test/vectors.test.ts"],
+  entry: ["./test/shims.ts", "./test/pqc.test.ts", "./test/pqcManager.web.test.ts", "./test/hybridManager.web.test.ts", "./test/challenger.test.ts", "./test/file.browser_test.ts", "./test/channel.test.ts", "./test/idManager.test.ts", "./test/saltpack.test.ts", "./test/softCredentials.test.ts", "./test/v0tov1.test.ts", "./test/keymanager.test.ts", "./test/vectors.test.ts"],
   output: {
     path: path.resolve(__dirname, "test/assets"),
     filename: "test-bundle.js",
@@ -12,7 +12,8 @@ module.exports = {
     rules: [
       {
         test: /\.ts$/,
-        use: "ts-loader",
+        loader: "esbuild-loader",
+        options: { target: "es2021" },
       },
     ],
   },

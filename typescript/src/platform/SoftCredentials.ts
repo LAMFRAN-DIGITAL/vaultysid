@@ -65,6 +65,9 @@ const COSEALGHASH = {
 
 const hash = (alg: string, message: Buffer) => myhash(alg.replace("-", ""), message);
 
+/** Unpadded base64url (WebAuthn JSON encoding); the `buffer/` shim has no "base64url". */
+const base64url = (data: Uint8Array): string => Buffer.from(data).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
 const base64ToPem = (b64cert: string) => {
   let pemcert = "";
   for (let i = 0; i < b64cert.length; i += 64) pemcert += b64cert.slice(i, i + 64) + "\n";
@@ -422,22 +425,37 @@ export default class SoftCredentials {
       attStmt: {},
     };
 
+    const clientDataJSON = Buffer.from(JSON.stringify(clientData), "utf-8");
+    const encodedAttestation = await cbor.encodeAsync(attestationObject);
+    const getClientExtensionResults = () => {
+      if (publicKey.extensions?.prf?.eval?.first) {
+        return { prf: { enabled: true } };
+      } else {
+        return {};
+      }
+    };
     const pkCredentials = {
       id: credential.rawId.toString("base64"),
       rawId: credential.rawId as unknown as ArrayBuffer,
       authenticatorAttachment: null,
       type: "public-key",
-      getClientExtensionResults: () => {
-        if (publicKey.extensions?.prf?.eval?.first) {
-          return { prf: { enabled: true } };
-        } else {
-          return {};
-        }
-      },
-      toJSON() {},
+      getClientExtensionResults,
+      toJSON: () => ({
+        id: base64url(credential.rawId),
+        rawId: base64url(credential.rawId),
+        type: "public-key",
+        clientExtensionResults: getClientExtensionResults(),
+        response: {
+          clientDataJSON: base64url(clientDataJSON),
+          attestationObject: base64url(encodedAttestation),
+          authenticatorData: base64url(attestationObject.authData),
+          publicKeyAlgorithm: -7,
+          transports: ["usb", "hybrid"],
+        },
+      }),
       response: {
-        clientDataJSON: Buffer.from(JSON.stringify(clientData), "utf-8"),
-        attestationObject: await cbor.encodeAsync(attestationObject),
+        clientDataJSON,
+        attestationObject: encodedAttestation,
         getTransports: () => ["usb", "hybrid"],
         getAuthenticatorData: () => attestationObject.authData,
         getPublicKey: () => coseKey,
@@ -626,7 +644,20 @@ export default class SoftCredentials {
           return {};
         }
       },
-      toJSON() {},
+      toJSON() {
+        return {
+          id: base64url(Buffer.from(id, "base64")),
+          rawId: base64url(Buffer.from(id, "base64")),
+          type: "public-key",
+          clientExtensionResults: {},
+          response: {
+            authenticatorData: base64url(authenticatorData),
+            clientDataJSON: base64url(Buffer.from(JSON.stringify(clientData), "utf-8")),
+            signature: base64url(Buffer.from(signature)),
+            ...(credential.userHandle ? { userHandle: base64url(Buffer.from(credential.userHandle)) } : {}),
+          },
+        };
+      },
       response: {
         authenticatorData,
         clientDataJSON: Buffer.from(JSON.stringify(clientData), "utf-8"),
