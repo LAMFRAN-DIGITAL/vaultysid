@@ -43,7 +43,8 @@
     "test:security:vectors": "tsx test/interops/generate-security-v2-vectors.ts",
     "test:service:vectors": "tsx test/interops/generate-service-identity-vectors.ts",
     "test:channel:vectors": "tsx test/interops/generate-xwing-channel-vectors.ts",
-    "test:anchor:vectors": "tsx test/interops/generate-service-anchor-vectors.ts"
+    "test:anchor:vectors": "tsx test/interops/generate-service-anchor-vectors.ts",
+    "test:pq:vectors": "tsx test/interops/generate-pq-identity-vectors.ts"
   },
   "keywords": [],
   "author": "",
