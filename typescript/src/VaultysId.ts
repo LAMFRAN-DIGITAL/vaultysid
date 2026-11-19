@@ -8,6 +8,8 @@ import CypherManager from "./KeyManager/CypherManager";
 import DeprecatedKeyManager from "./KeyManager/DeprecatedKeyManager";
 import { DILITHIUM_PK_LENGTH } from "./KeyManager/DilithiumManager";
 import { DHIES_V3_SIGNED_TAG } from "./KeyManager/dhies";
+import { dhiesV1LegacyDecrypt } from "./KeyManager/dhiesV1Legacy";
+import { getCypherPublicKeyFromId } from "./KeyManager/CypherManager";
 import { decodeRecord, isBytes } from "./KeyManager/validation";
 import type { Ed25519Signer } from "./Ed25519Signer";
 import PassportAAManager, { TYPE_PASSPORT_AA } from "./KeyManager/PassportAAManager";
@@ -639,6 +641,25 @@ export default class VaultysId {
       if (mode === "require") return null;
     }
     return this.keyManager.dhiesDecrypt(encryptedMessage, cleanId);
+  }
+
+  /**
+   * Opens a DHIES message written by @vaultys/id 3.x (`dhiesEncrypt` before 4.0). That format does not authenticate
+   * the sender: anyone can produce a message under any sender id, hence `senderVerified: false`. Decrypt-only: 4.0
+   * never writes it. Returns null when the message does not open.
+   */
+  async dhiesDecryptLegacyV1(encryptedMessage: Buffer | Uint8Array, claimedSenderId: Buffer | string): Promise<{ plaintext: Buffer; senderVerified: false } | null> {
+    try {
+      const secretKey = (this.keyManager as CypherManager).cypher?.secretKey;
+      if (!secretKey) return null;
+      const cleanId = typeof claimedSenderId === "string" ? Buffer.from(claimedSenderId.slice(2), "hex") : Buffer.from(claimedSenderId).slice(1);
+      const senderPublicKey = getCypherPublicKeyFromId(cleanId);
+      if (!senderPublicKey) return null;
+      const plaintext = dhiesV1LegacyDecrypt(encryptedMessage, secretKey, this.keyManager.cypher.publicKey, senderPublicKey);
+      return plaintext ? { plaintext, senderVerified: false } : null;
+    } catch {
+      return null;
+    }
   }
 
   private async dhiesV3SignedDecrypt(encryptedMessage: Buffer, senderId: Buffer | string, cleanId: Buffer): Promise<Buffer | null> {

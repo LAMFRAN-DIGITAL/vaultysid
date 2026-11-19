@@ -28,8 +28,8 @@ protocols below are not compatible with 3.x and older:
 - **DHIES v2** replaces DHIES: sender-authenticated (`es || ss`), `0x02 || nonce || e_pk || secretbox`; old
   ciphertexts can't be decrypted.
 - **IdManager persistence**: the store always keeps the full secret (`store.secret`); stores/backups restore the
-  exact same identity (algorithm, type, DID). Entropy-only (legacy) stores are rejected; restore them explicitly
-  with `new IdManager(await VaultysId.fromEntropy(entropy, type, alg), store)`. Empty backup passphrases are rejected.
+  exact same identity (algorithm, type, DID). Entropy-only (3.x) stores are rejected by `fromStore`; migrate them
+  with `IdManager.fromLegacyStore` (see below). Empty backup passphrases are rejected.
 - **Default deny** for remote services: `acceptPRF`, `acceptDecryptFile`/`acceptEncryptFile`, `acceptDecrypt` and
   `acceptSignFile` refuse unless an `accept` callback approves the remote. The file-encryption PRF namespace
   (`encryption/...`) is never served through `acceptPRF` to another identity.
@@ -43,6 +43,25 @@ protocols below are not compatible with 3.x and older:
   contact.
 - Untrusted ids, secrets and certificates are length-checked and never throw uncaught `TypeError`s;
   `VaultysId.decrypt` correctly parses a hex sender id.
+
+### Opening a 3.x wallet
+
+A 3.x wallet opens in 4.0 read-only for what it already holds; it never talks the 3.x protocols again.
+
+- `await IdManager.fromLegacyStore(store, hint?)` migrates a 3.x store in place: same identity and DID, the store is
+  rewritten with its secret. The type and algorithm are found from the store's own certificates; a store without
+  any needs `hint` (`{ type: 0 | 1 | 2, alg: "ed25519" | "dilithium_ed25519" | "dilithium" }`), and a hint that
+  contradicts the certificates is refused. `IdManager.importBackup(data, passphrase, true | hint)` does the same
+  for a 3.x backup.
+- The 3.x (version 0) certificates already in the store that involve this identity and verify are recorded at
+  migration (`store.legacy`): `verifyRelationshipCertificate` and `verifyWebOfTrust` keep accepting those, and
+  only those. `Challenger.verifyCertificate` still refuses every v0 certificate: v0 handshakes were signed like
+  `signChallenge`, so a v0 certificate received later proves nothing. `legacyContacts()` lists the contacts still on
+  a v0 certificate; a new handshake with each replaces it.
+- `vaultysId.dhiesDecryptLegacyV1(message, claimedSenderId)` opens a 3.x DHIES message and returns
+  `{ plaintext, senderVerified: false }`: that format never authenticated the sender. 4.0 never writes it.
+- Unchanged from 3.x: identities and DIDs, `signChallenge` / file signatures, saltpack messages.
+- Not possible: a live handshake between a 3.x and a 4.0 client. 3.x users must upgrade.
 
 Cross-language vectors: `test/interops/security-v2-vectors.json` (`npx tsx test/interops/generate-security-v2-vectors.ts`).
 

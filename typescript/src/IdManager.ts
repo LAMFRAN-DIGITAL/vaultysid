@@ -13,6 +13,8 @@ import { VaultysBackup } from "./platform/abstract";
 import { platformCrypto } from "./platform";
 import DeprecatedKeyManager from "./KeyManager/DeprecatedKeyManager";
 import PassportAAManager, { TYPE_PASSPORT_AA } from "./KeyManager/PassportAAManager";
+import { LEGACY_RECORD_KEY, certificateHash, decodeV0Certificate, involves, recoverLegacyIdentity, storedCertificates, verifyV0CertificateSignatures } from "./legacyV3";
+import type { LegacyIdentityHint, LegacyMigrationRecord } from "./legacyV3";
 
 /**
  * Storage key for "wot" and "signatures": `<timestamp>-<hex SHA-256(data)>`. The timestamp alone made two entries
@@ -157,9 +159,11 @@ export default class IdManager {
    * Imports a backup file
    * @param backupData The backup file data as Uint8Array
    * @param passphrase Optional passphrase for decryption (only needed for encrypted backups)
+   * @param legacy accept a 3.x backup (entropy only) and migrate it, see `fromLegacyStore`: `true` to find the
+   * identity type/algorithm from the backup's certificates, or the type/algorithm it was created with
    * @returns Promise resolving to import result or null if import failed
    */
-  static async importBackup(backupData: Uint8Array, passphrase?: string): Promise<IdManager | null> {
+  static async importBackup(backupData: Uint8Array, passphrase?: string, legacy?: boolean | LegacyIdentityHint): Promise<IdManager | null> {
     try {
       // Decode the backup data
       const backup = decode(backupData) as VaultysBackup;
@@ -194,6 +198,9 @@ export default class IdManager {
         () => {},
         () => {},
       );
+      if (legacy && !store.get("secret") && store.get("entropy") !== undefined) {
+        return await IdManager.fromLegacyStore(store, typeof legacy === "object" ? legacy : undefined);
+      }
       return await IdManager.fromStore(store);
     } catch (error) {
       console.error("Import error:", error);
@@ -204,8 +211,8 @@ export default class IdManager {
   /**
    * Restore an IdManager from a store. The identity is restored exactly from
    * the persisted secret (same type, algorithm and DID). A legacy store holding
-   * only `entropy` is rejected: its type/algorithm can't be recovered, rebuild
-   * it explicitly with `new IdManager(await VaultysId.fromEntropy(entropy, type, alg), store)`.
+   * only `entropy` (written by 3.x) is rejected here: migrate it with
+   * `IdManager.fromLegacyStore(store)`.
    * An empty store creates a new machine identity.
    */
   static async fromStore(store: Store) {
@@ -215,10 +222,52 @@ export default class IdManager {
       return new IdManager(vaultysId, store);
     }
     if (store.get("entropy")) {
-      throw new Error("Legacy store without secret: the identity type and algorithm can't be recovered from entropy alone. Restore it explicitly with VaultysId.fromEntropy(entropy, type, alg).");
+      throw new Error("Legacy (3.x) store without secret: migrate it with IdManager.fromLegacyStore(store).");
     }
     const vaultysId = await VaultysId.generateMachine();
     return new IdManager(vaultysId, store);
+  }
+
+  /**
+   * Opens a store written by @vaultys/id 3.x, which keeps only `entropy`, and migrates it in place: the same identity
+   * (same DID) is restored and the store rewritten with its secret, as 4.0 stores are.
+   *
+   * The identity type and algorithm are recovered from the store's own certificates; a store without any needs
+   * `hint`. The 3.x (version 0) certificates found in the store that involve this identity and verify are recorded
+   * (`store.legacy`): `verifyRelationshipCertificate` and `verifyWebOfTrust` keep accepting exactly those, never a
+   * v0 certificate obtained later. Contacts still on a v0 certificate are listed by `legacyContacts()`; a new
+   * handshake with them replaces it. A store that already has a secret is opened as `fromStore` does.
+   */
+  static async fromLegacyStore(store: Store, hint?: LegacyIdentityHint) {
+    if (store.get("secret")) return IdManager.fromStore(store);
+    const vaultysId = await recoverLegacyIdentity(store, hint);
+    const trusted = storedCertificates(store)
+      .filter((c) => involves(vaultysId, c) && verifyV0CertificateSignatures(c))
+      .map(certificateHash);
+    const record: LegacyMigrationRecord = { from: "3.x", migratedAt: Date.now(), certificates: Object.fromEntries(trusted.map((h) => [h, true as const])) };
+    store.set(LEGACY_RECORD_KEY, record);
+    return new IdManager(vaultysId, store);
+  }
+
+  /** A v0 certificate recorded when this store was migrated from 3.x, involving this identity, that still verifies. */
+  private isMigratedLegacyCertificate(certificate: Buffer | Uint8Array) {
+    const record = this.store.get(LEGACY_RECORD_KEY) as LegacyMigrationRecord | undefined;
+    if (!record || typeof record.certificates !== "object" || record.certificates === null) return false;
+    const cert = Buffer.from(certificate);
+    return record.certificates[certificateHash(cert)] === true && involves(this.vaultysId, cert) && verifyV0CertificateSignatures(cert);
+  }
+
+  private async verifyStoredCertificate(certificate: Buffer | Uint8Array) {
+    return (await Challenger.verifyCertificate(Buffer.from(certificate))) || this.isMigratedLegacyCertificate(certificate);
+  }
+
+  /** DIDs of the contacts still on a 3.x (version 0) certificate: a new handshake with each replaces it. */
+  legacyContacts(): string[] {
+    const contacts = this.store.substore("contacts");
+    return contacts.list().filter((did) => {
+      const cert = contacts.get(did)?.certificate;
+      return cert && decodeV0Certificate(Buffer.from(cert)) !== null;
+    });
   }
 
   merge(otherStore: Store, master = true) {
@@ -258,7 +307,7 @@ export default class IdManager {
     let verified = true;
     for (const certid of this.store.substore("wot").list()) {
       const cert = this.store.substore("wot").get(certid);
-      verified = verified && (await Challenger.verifyCertificate(Buffer.from(cert)));
+      verified = verified && (await this.verifyStoredCertificate(cert));
       //if (!verified) console.log(Challenger.deserializeCertificate(cert));
     }
     //console.log("wot", verified);
@@ -268,11 +317,11 @@ export default class IdManager {
     }
     //console.log("registrations", verified);
     for (const contact of this.contacts) {
-      verified = verified && (await Challenger.verifyCertificate(Buffer.from(contact!.certificate!)));
+      verified = verified && (await this.verifyStoredCertificate(contact!.certificate!));
     }
     //console.log("contacts", verified);
     for (const app of this.apps) {
-      verified = verified && (await Challenger.verifyCertificate(Buffer.from(app!.certificate!)));
+      verified = verified && (await this.verifyStoredCertificate(app!.certificate!));
     }
     //console.log("apps", verified);
 
@@ -369,7 +418,7 @@ export default class IdManager {
 
   async verifyRelationshipCertificate(did: string) {
     const c = this.store.substore("contacts").get(did) || this.store.substore("registrations").get(did);
-    return Challenger.verifyCertificate(c.certificate);
+    return this.verifyStoredCertificate(c.certificate);
   }
 
   set name(n) {
