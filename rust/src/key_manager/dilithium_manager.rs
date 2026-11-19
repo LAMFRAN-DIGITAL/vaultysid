@@ -6,7 +6,7 @@ use crate::key_manager::{
     Capability, KeyPairImpl,
 };
 use libcrux_ml_dsa::ml_dsa_87;
-use rand::{rngs::StdRng, RngCore, SeedableRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use rmp_serde::from_slice;
 use serde::ser::{SerializeMap, Serializer};
 use serde::Deserialize;

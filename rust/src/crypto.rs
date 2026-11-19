@@ -1,5 +1,5 @@
-use hmac::{Hmac, Mac};
-use rand::{thread_rng, RngCore};
+use hmac::{Hmac, KeyInit, Mac};
+use rand::Rng;
 use sha2::{Digest, Sha224, Sha256, Sha512};
 use std::str::FromStr;
 use zeroize::Zeroize;
@@ -90,7 +90,7 @@ pub fn hmac(alg: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
 /// Generate random bytes
 pub fn random_bytes(size: usize) -> Vec<u8> {
     let mut bytes = vec![0u8; size];
-    thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     bytes
 }
 
