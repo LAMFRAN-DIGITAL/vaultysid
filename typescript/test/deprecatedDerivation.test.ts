@@ -25,4 +25,14 @@ describe("Deprecated (bip32-ed25519) derivation", () => {
       });
     }
   }
+
+  it("creates a swapping certificate that verifies, and rejects a tampered one", async () => {
+    const km = await DeprecatedKeyManager.create_Id25519_fromEntropy(Buffer.alloc(32, 0x42));
+    const hiscp = await km.createSwapingCertificate();
+    assert.ok(hiscp);
+    const next = await DeprecatedKeyManager.create_Id25519_fromEntropy(Buffer.alloc(32, 0x42), 1);
+    assert.equal(hiscp.newId.toString("hex"), next.id.toString("hex"));
+    assert.equal(await km.verifySwapingCertificate(hiscp), true);
+    assert.equal(await km.verifySwapingCertificate({ ...hiscp, timestamp: hiscp.timestamp + 1 }), false);
+  });
 });
