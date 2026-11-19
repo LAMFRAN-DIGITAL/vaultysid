@@ -11,6 +11,7 @@ import DeprecatedKeyManager from "./src/KeyManager/DeprecatedKeyManager";
 import { enableSoftCredentials, isSoftCredentialsEnabled, configureWebAuthn } from "./src/platform/softCredentialsConfig";
 import { dhiesV2Encrypt, dhiesV2Decrypt, dhiesV3Encrypt, dhiesV3Decrypt } from "./src/KeyManager/dhies";
 import { canonicalServiceId, isCanonicalServiceId, deriveServiceIdentity } from "./src/serviceIdentity";
+import { initiateXWingChannel, acceptXWingChannel, connectOverXWing, acceptOverXWing, identityFingerprint, ChannelError, isChannelError } from "./src/xwingChannel";
 
 //utils
 import * as crypto from "./src/crypto";
@@ -22,7 +23,7 @@ if (typeof Symbol.dispose === "undefined") {
   Symbol.dispose = Symbol("Symbol.dispose");
 }
 
-export { crypto, Buffer, VaultysId, Challenger, MemoryChannel, MemoryStorage, StreamChannel, convertWebReadableStreamToNodeReadable, convertWebWritableStreamToNodeWritable, LocalStorage, IdManager, KeyManager, GameOfLifeIcon, CryptoChannel, DeprecatedKeyManager, migrateVaultysId, migrateIdManager, enableSoftCredentials, isSoftCredentialsEnabled, configureWebAuthn, dhiesV2Encrypt, dhiesV2Decrypt, dhiesV3Encrypt, dhiesV3Decrypt, canonicalServiceId, isCanonicalServiceId, deriveServiceIdentity };
+export { crypto, Buffer, VaultysId, Challenger, MemoryChannel, MemoryStorage, StreamChannel, convertWebReadableStreamToNodeReadable, convertWebWritableStreamToNodeWritable, LocalStorage, IdManager, KeyManager, GameOfLifeIcon, CryptoChannel, DeprecatedKeyManager, migrateVaultysId, migrateIdManager, enableSoftCredentials, isSoftCredentialsEnabled, configureWebAuthn, dhiesV2Encrypt, dhiesV2Decrypt, dhiesV3Encrypt, dhiesV3Decrypt, canonicalServiceId, isCanonicalServiceId, deriveServiceIdentity, initiateXWingChannel, acceptXWingChannel, connectOverXWing, acceptOverXWing, identityFingerprint, ChannelError, isChannelError };
 
 export type { Channel, Store, File, StoredApp, StoredContact, FileSignature };
 export { createPassportAAReader } from "./src/passport/reader";
@@ -30,6 +31,7 @@ export type { PassportAAReader } from "./src/passport/reader";
 export type { PassportAAOptions } from "./src/KeyManager/PassportAAManager";
 export type { Ed25519Signer } from "./src/Ed25519Signer";
 export type { ServiceAlgorithm, ServiceRole, ServiceIdOptions, ServiceIdentityOptions } from "./src/serviceIdentity";
+export type { XWingChannel, XWingChannelOptions, XWingHandshakeResult, ConnectOverXWingOptions, AcceptOverXWingOptions, ChannelErrorCode } from "./src/xwingChannel";
 
 export type ChallengeType = {
   protocol: string;
