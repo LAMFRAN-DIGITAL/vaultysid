@@ -11,7 +11,7 @@ Monorepo with three implementations of the same identity library, two add-on pac
 - `rust/` — native implementation (crate `vaultysid`), must stay byte-compatible with TypeScript. Run all cargo commands from `rust/`. It does not implement all of 4.0 yet (see "Conventions that matter").
 - `kmip/` — optional Node.js adapter (`@vaultys/id-kmip`) that delegates Ed25519 signing to a KMIP endpoint.
 - `passport-nfc/` — optional desktop and mobile NFC reader for passport identities (type `0x05`).
-- `rfc/` — normative specs: `PROTOCOL.md` (Web of Trust / handcheck challenge format), `DID.md`, `ENCRYPTION.md`, `PQ-ENCRYPTION.md` (post-quantum types, PRF key, DHIES v3), `PASSPORT-AA.md`, `SERVICE-IDENTITIES.md`, `SECURE-CHANNEL.md`. Change these first when altering wire formats. `rfc/proposals/` holds designs that are not implemented (`ANONYMOUS-CREDENTIALS.md`, `PASSPORT-CAN.md`).
+- `rfc/` — normative specs: `PROTOCOL.md` (Web of Trust / handcheck challenge format), `DID.md`, `ENCRYPTION.md`, `PQ-ENCRYPTION.md` (post-quantum types, PRF key, DHIES v3), `PASSPORT-AA.md`, `SERVICE-IDENTITIES.md`, `SECURE-CHANNEL.md`. Change these first when altering wire formats.
 - `interops/` — bash drivers that run TypeScript and Rust processes against each other over a file-based channel.
 - `.ai.md` — an older contributor guide; broadly accurate on concepts but stale on file names and on script paths.
 
