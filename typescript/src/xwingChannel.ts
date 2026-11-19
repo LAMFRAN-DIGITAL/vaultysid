@@ -16,6 +16,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { ml_kem768_x25519 } from "@noble/post-quantum/hybrid.js";
 import { Buffer } from "buffer/";
 import Challenger, { CHALLENGE_STATE } from "./Challenger";
+import { timestampedKey } from "./IdManager";
 import type IdManager from "./IdManager";
 import type { Channel } from "./MemoryChannel";
 import VaultysId from "./VaultysId";
@@ -398,12 +399,10 @@ export function identityFingerprint(identity: VaultysId): Uint8Array {
 }
 
 /**
- * Storage key of a certificate in `wot`: `<timestamp>-<hex SHA-256(certificate)>`. Two certificates of the same
- * millisecond no longer overwrite each other, and keys still sort by date.
+ * Storage key of a certificate in `wot`: `<timestamp>-<hex SHA-256(certificate)>`, as IdManager now does. Two
+ * certificates of the same millisecond no longer overwrite each other, and keys still sort by date.
  */
-export function certificateKey(certificate: Uint8Array, now: number = Date.now()): string {
-  return `${String(now)}-${Buffer.from(sha256(certificate)).toString("hex")}`;
-}
+export const certificateKey = timestampedKey;
 
 export interface ConnectOverXWingOptions extends ServiceIdOptions {
   /**
