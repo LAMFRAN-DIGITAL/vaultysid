@@ -36,6 +36,8 @@ export { createPassportAAReader } from "./src/passport/reader";
 export type { PassportAAReader } from "./src/passport/reader";
 export type { PassportAAOptions } from "./src/KeyManager/PassportAAManager";
 export type { Ed25519Signer } from "./src/Ed25519Signer";
+export type { LegacyIdentityHint } from "./src/legacyV3";
+export { LEGACY_REOPEN_DEFAULT } from "./src/legacyV3";
 export type { ServiceAlgorithm, ServiceRole, ServiceIdOptions, ServiceIdentityOptions } from "./src/serviceIdentity";
 export type { AnchorPinResult } from "./src/serviceAnchor";
 export type { XWingChannel, XWingChannelOptions, XWingHandshakeResult, ConnectOverXWingOptions, AcceptOverXWingOptions, ChannelErrorCode } from "./src/xwingChannel";
