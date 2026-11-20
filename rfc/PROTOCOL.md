@@ -62,6 +62,8 @@ The challenge progresses through the following states:
 
 Only `version = 1` challenges are valid. Implementations MUST reject any other version; the legacy version 0 encoding has been removed because it did not sign metadata and allowed downgrades.
 
+Migrating a wallet written by 3.x is the one exception, and it never applies to a received certificate: when an implementation migrates such a store, it MAY record the version 0 certificates the store already holds, involving the store's own identity and whose signatures verify under the 3.x rules, and keep treating exactly those as valid relationship certificates. A version 0 handshake signature is `sign(SHA-256("VAULTYS_SIGN" || v0 encoding))`, the domain of `signChallenge`, so a version 0 certificate obtained after the migration MUST NOT be accepted.
+
 ### 3.3. State Transitions
 
 Implementations MUST enforce exactly the following transitions. Any other combination of local state and received message MUST move the session to `ERROR`.
