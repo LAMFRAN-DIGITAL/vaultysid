@@ -46,22 +46,39 @@ protocols below are not compatible with 3.x and older:
 
 ### Opening a 3.x wallet
 
-A 3.x wallet opens in 4.0 read-only for what it already holds; it never talks the 3.x protocols again.
+A 3.x wallet opens in 4.0 with nothing to ask the user; it never talks the 3.x protocols again.
 
-- `await IdManager.fromLegacyStore(store, hint?)` migrates a 3.x store in place: same identity and DID, the store is
-  rewritten with its secret. The type and algorithm are found from the store's own certificates; a store without
-  any needs `hint` (`{ type: 0 | 1 | 2, alg: "ed25519" | "dilithium_ed25519" | "dilithium" }`), and a hint that
-  contradicts the certificates is refused. `IdManager.importBackup(data, passphrase, true | hint)` does the same
-  for a 3.x backup.
+- `await IdManager.open(store, { legacyFallback? })` opens any store: a 4.0 store as `fromStore` does, a 3.x store
+  (which kept only `entropy`) migrated in place, an empty store with a new machine identity. Opening it again opens
+  it as it was left; a migration interrupted after the secret was written is finished.
+  - Same identity and DID: the type and algorithm, which 3.x did not store, are found from the store's own
+    certificates.
+  - A store without any certificate gives nothing to check them against. It is opened with `legacyFallback`, by
+    default `LEGACY_REOPEN_DEFAULT` (a machine ed25519 identity: what 3.x's own `fromStore` reopened such a store
+    as); an app that knows what it created passes that instead. Such a store keeps its `entropy`
+    (`isLegacyIdentityGuessed()` is true) until `confirmLegacyIdentity()`, and `fromLegacyStore(store, hint)` can
+    still correct it.
+  - A 3.x FIDO2 wallet is refused with an explicit error: 3.x stored only its `entropy`, not the credential id of
+    the security key, so the store alone cannot reopen it (3.x could not either).
+- `IdManager.fromLegacyStore(store, hint?)` is the explicit form: without a certificate it needs `hint`
+  (`{ type: 0 | 1 | 2, alg: "ed25519" | "dilithium_ed25519" | "dilithium" }`), and a hint that contradicts the
+  certificates is refused. `IdManager.importBackup(data, passphrase)` migrates a 3.x backup as `open` does (`true` or
+  a hint: as `fromLegacyStore`; `false`: refused).
 - The 3.x (version 0) certificates already in the store that involve this identity and verify are recorded at
   migration (`store.legacy`): `verifyRelationshipCertificate` and `verifyWebOfTrust` keep accepting those, and
   only those. `Challenger.verifyCertificate` still refuses every v0 certificate: v0 handshakes were signed like
-  `signChallenge`, so a v0 certificate received later proves nothing. `legacyContacts()` lists the contacts still on
-  a v0 certificate; a new handshake with each replaces it.
+  `signChallenge`, so a v0 certificate received later proves nothing.
+- `legacyContacts()` and `legacyApps()` list the contacts and apps still on a v0 certificate. A new handshake with
+  the same identity (`askContact` / `acceptContact`, both sides on 4.0) replaces its certificate and keeps its
+  metadata; a 4.0 certificate is never replaced.
 - `vaultysId.dhiesDecryptLegacyV1(message, claimedSenderId)` opens a 3.x DHIES message and returns
   `{ plaintext, senderVerified: false }`: that format never authenticated the sender. 4.0 never writes it.
 - Unchanged from 3.x: identities and DIDs, `signChallenge` / file signatures, saltpack messages.
 - Not possible: a live handshake between a 3.x and a 4.0 client. 3.x users must upgrade.
+- Wallets written by the published 3.0.4 are frozen in `test/interops/legacy-v3-vectors.json`
+  (`pnpm test:legacy:vectors` writes new ones), read by the TypeScript tests and by Go (`go/pkg/legacyv3`: identity
+  recovery, v0 certificates, DHIES v1). A move from a migrated classical identity to a post-quantum one, keeping
+  its contacts, is proposed in `rfc/proposals/IDENTITY-SUCCESSION.md`.
 
 Cross-language vectors: `test/interops/security-v2-vectors.json` (`npx tsx test/interops/generate-security-v2-vectors.ts`).
 
