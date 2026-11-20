@@ -10,6 +10,7 @@
  * still verify; their hashes are recorded at migration time and nothing else is accepted later.
  */
 import { decode } from "@msgpack/msgpack";
+import nacl from "tweetnacl";
 import { Buffer } from "buffer/";
 import { hash } from "./crypto";
 import type { Store } from "./MemoryStorage";
@@ -21,8 +22,17 @@ export type LegacyIdentityHint = { type: 0 | 1 | 2; alg: LegacyAlgorithm };
 /**
  * Recorded in the store under `legacy` when a 3.x store is migrated. `certificates` maps the hex SHA-256 of each
  * trusted v0 certificate to true (an object, not an array: the store serializer turns arrays into Buffers).
+ * `guessed` marks a store that had no certificate to check the identity type and algorithm against: its `entropy` is
+ * kept until `IdManager.confirmLegacyIdentity()`, so a wrong guess can still be corrected.
  */
-export type LegacyMigrationRecord = { from: "3.x"; migratedAt: number; certificates: Record<string, true> };
+export type LegacyMigrationRecord = { from: "3.x"; migratedAt: number; certificates: Record<string, true>; guessed?: true };
+
+/**
+ * What `IdManager.fromStore` in 3.x made of a store holding only `entropy`: a machine (type 0) ed25519 identity,
+ * whatever the store was created as. The identity a 3.x app got back after a restart, if it reopened its store that
+ * way.
+ */
+export const LEGACY_REOPEN_DEFAULT: LegacyIdentityHint = { type: 0, alg: "ed25519" };
 
 export const LEGACY_RECORD_KEY = "legacy";
 
@@ -150,27 +160,63 @@ export const storedCertificates = (store: Store): Buffer[] => {
   return out;
 };
 
+/** A store written by 3.x and not migrated yet: a 32-byte `entropy` and no `secret`. */
+export const isLegacyV3Store = (store: Store) => !store.get("secret") && toBytes(store.get("entropy"))?.length === 32;
+
+/** The 32-byte `entropy` of a 3.x store, or null. */
+export const legacyEntropy = (store: Store) => {
+  const entropy = toBytes(store.get("entropy"));
+  return entropy && entropy.length === 32 ? entropy : null;
+};
+
+/**
+ * A 3.x FIDO2 wallet (type 3 or 4) also stores only `entropy`: the X25519 key of the identity comes from it
+ * (secret = SHA-512(entropy)[0..32]), but the credential id the authenticator needs is not in the store, nor in any
+ * certificate. Such a wallet is recognized, never rebuilt, so that it is not mistaken for a software identity.
+ */
+const isOwnFidoParty = (entropy: Buffer, rawId: Buffer) => {
+  try {
+    const id = VaultysId.fromId(rawId);
+    if (!id.isHardware()) return false;
+    const cypherPublicKey = Buffer.from(nacl.box.keyPair.fromSecretKey(hash("sha512", entropy).slice(0, 32)).publicKey);
+    const theirs = (id.keyManager as unknown as { cypher?: { publicKey?: Uint8Array } }).cypher?.publicKey;
+    return !!theirs && cypherPublicKey.equals(Buffer.from(theirs));
+  } catch {
+    return false;
+  }
+};
+
 const CANDIDATES: LegacyIdentityHint[] = (["ed25519", "dilithium_ed25519", "dilithium"] as const).flatMap((alg) => ([1, 0, 2] as const).map((type) => ({ type, alg })));
 
 /**
  * The identity of a 3.x store (`entropy` only). The type and algorithm are found by matching the candidates against
- * the store's own certificates; with no certificate to match, `hint` is required. A hint that contradicts the
- * certificates is refused.
+ * the store's own certificates. With no certificate to match, `hint` is used if given (`guessed: false`, the caller
+ * vouches for it), else `fallback` (`guessed: true`), else it fails. A hint that contradicts the certificates is
+ * refused, and so is a FIDO2 wallet (its credential id is not in the store).
  */
-export const recoverLegacyIdentity = async (store: Store, hint?: LegacyIdentityHint): Promise<VaultysId> => {
-  const entropy = toBytes(store.get("entropy"));
-  if (!entropy || entropy.length !== 32) throw new Error("Not a 3.x store: no 32-byte entropy");
+export const recoverLegacyIdentity = async (store: Store, hint?: LegacyIdentityHint, fallback?: LegacyIdentityHint): Promise<{ vaultysId: VaultysId; guessed: boolean }> => {
+  const entropy = legacyEntropy(store);
+  if (!entropy) throw new Error("Not a 3.x store: no 32-byte entropy");
   const certificates = storedCertificates(store).filter((c) => decodeV0Certificate(c));
   const matches = (id: VaultysId) => certificates.some((c) => involves(id, c));
+  const fido = () =>
+    certificates.some((c) => {
+      const d = decodeV0Certificate(c)!;
+      return isOwnFidoParty(entropy, d.pk1) || isOwnFidoParty(entropy, d.pk2);
+    });
   if (hint) {
     const id = await VaultysId.fromEntropy(entropy, hint.type, hint.alg);
     if (certificates.length > 0 && !matches(id)) throw new Error("The type/algorithm hint does not match the identity found in the store's certificates");
-    return id;
+    return { vaultysId: id, guessed: false };
   }
-  if (certificates.length === 0) throw new Error("3.x store without certificates: pass the identity type and algorithm it was created with");
+  if (certificates.length === 0) {
+    if (fallback) return { vaultysId: await VaultysId.fromEntropy(entropy, fallback.type, fallback.alg), guessed: true };
+    throw new Error("3.x store without certificates: pass the identity type and algorithm it was created with");
+  }
   for (const candidate of CANDIDATES) {
     const id = await VaultysId.fromEntropy(entropy, candidate.type, candidate.alg);
-    if (matches(id)) return id;
+    if (matches(id)) return { vaultysId: id, guessed: false };
   }
+  if (fido()) throw new Error("3.x FIDO2 wallet: the store does not hold the credential id of the security key, so it cannot be reopened from the store alone");
   throw new Error("No identity type/algorithm derived from this entropy appears in the store's certificates");
 };
