@@ -1,7 +1,7 @@
 import { dearmorAndDecrypt, encryptAndArmor } from "@vaultys/saltpack";
 import { hash, hmac, randomBytes, secureErase } from "../crypto";
 import { Buffer } from "buffer/";
-import nacl, { BoxKeyPair } from "tweetnacl";
+import { BoxKeyPair, boxKeyPairFromSecretKey, scalarMult } from "../nacl";
 import { decode, encode } from "@msgpack/msgpack";
 import { Bip32PrivateKey, Bip32PublicKey, PublicKey, HARDENED_OFFSET } from "@stricahq/bip32ed25519";
 import { hmac as nobleHmac } from "@noble/hashes/hmac.js";
@@ -137,7 +137,7 @@ export default class DeprecatedKeyManager {
     const swapIndexBuffer = Buffer.alloc(8);
     swapIndexBuffer.writeBigInt64LE(BigInt(swapIndex) as unknown as number, 0);
     const seed2 = sha256(Buffer.concat([seed.slice(32, 64), swapIndexBuffer]));
-    const cypher = nacl.box.keyPair.fromSecretKey(seed2);
+    const cypher = boxKeyPairFromSecretKey(seed2);
     km.cypher = {
       publicKey: Buffer.from(cypher.publicKey),
       secretKey: Buffer.from(cypher.secretKey),
@@ -169,7 +169,7 @@ export default class DeprecatedKeyManager {
       hmac: (message: string) => (cypher.secretKey ? hmac("sha256", Buffer.from(Buffer.from(cypher.secretKey).toString("hex"), "utf-8"), "VaultysID/" + message + "/end") : undefined),
       signcrypt: async (plaintext: string, publicKeys: Buffer[]) => encryptAndArmor(plaintext, cypher as BoxKeyPair, publicKeys),
       decrypt: async (encryptedMessage: string, senderKey?: Buffer | null) => dearmorAndDecrypt(encryptedMessage, cypher as BoxKeyPair, senderKey),
-      diffieHellman: async (publicKey: Buffer) => Buffer.from(nacl.scalarMult(cypher.secretKey!, publicKey)),
+      diffieHellman: async (publicKey: Buffer) => Buffer.from(scalarMult(cypher.secretKey!, publicKey)),
     };
   }
 
@@ -204,7 +204,7 @@ export default class DeprecatedKeyManager {
       secretKey: x,
       publicKey: Buffer.from(Bip32PrivateKey.fromBytes(x).toBip32PublicKey().toPublicKey().toBytes()),
     };
-    const cypher = nacl.box.keyPair.fromSecretKey(e);
+    const cypher = boxKeyPairFromSecretKey(e);
     km.cypher = {
       publicKey: Buffer.from(cypher.publicKey),
       secretKey: Buffer.from(cypher.secretKey),

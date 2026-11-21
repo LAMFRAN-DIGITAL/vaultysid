@@ -10,7 +10,7 @@
  * still verify; their hashes are recorded at migration time and nothing else is accepted later.
  */
 import { decode } from "@msgpack/msgpack";
-import nacl from "tweetnacl";
+import { boxKeyPairFromSecretKey } from "./nacl";
 import { Buffer } from "buffer/";
 import { hash } from "./crypto";
 import type { Store } from "./MemoryStorage";
@@ -178,7 +178,7 @@ const isOwnFidoParty = (entropy: Buffer, rawId: Buffer) => {
   try {
     const id = VaultysId.fromId(rawId);
     if (!id.isHardware()) return false;
-    const cypherPublicKey = Buffer.from(nacl.box.keyPair.fromSecretKey(hash("sha512", entropy).slice(0, 32)).publicKey);
+    const cypherPublicKey = Buffer.from(boxKeyPairFromSecretKey(hash("sha512", entropy).slice(0, 32)).publicKey);
     const theirs = (id.keyManager as unknown as { cypher?: { publicKey?: Uint8Array } }).cypher?.publicKey;
     return !!theirs && cypherPublicKey.equals(Buffer.from(theirs));
   } catch {

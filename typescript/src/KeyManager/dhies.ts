@@ -1,4 +1,4 @@
-import nacl from "tweetnacl";
+import { boxKeyPair, boxKeyPairFromSecretKey, scalarMult, SECRETBOX_NONCE_LENGTH, SECRETBOX_OVERHEAD_LENGTH, secretboxOpen, secretboxSeal } from "../nacl";
 import { Buffer } from "buffer/";
 import { hash, randomBytes, secureErase } from "../crypto";
 import { mlKemEncapsulate, MLKEM768_CT_LENGTH, MLKEM768_PK_LENGTH } from "../pqCrypto";
@@ -16,9 +16,9 @@ import { mlKemEncapsulate, MLKEM768_CT_LENGTH, MLKEM768_PK_LENGTH } from "../pqC
 
 export const DHIES_V2_TAG = 0x02;
 export const DHIES_V2_INFO = Buffer.from("VAULTYS_DHIES_V2", "ascii");
-const NONCE_LENGTH = nacl.secretbox.nonceLength; // 24
+const NONCE_LENGTH = SECRETBOX_NONCE_LENGTH; // 24
 const KEY_LENGTH = 32;
-const MAC_LENGTH = nacl.secretbox.overheadLength; // 16
+const MAC_LENGTH = SECRETBOX_OVERHEAD_LENGTH; // 16
 export const DHIES_V2_MIN_LENGTH = 1 + NONCE_LENGTH + KEY_LENGTH + MAC_LENGTH;
 
 /** X25519 with our static secret key (may require a hardware round-trip, hence async). */
@@ -54,15 +54,15 @@ export async function dhiesV2Encrypt(message: string | Uint8Array, senderDH: Sta
   checkKey(recipientPublicKey, "recipient public key");
   const plaintext = typeof message === "string" ? Buffer.from(message, "utf8") : Buffer.from(message);
 
-  const ephemeral = testing?.ephemeralSecretKey ? nacl.box.keyPair.fromSecretKey(Buffer.from(testing.ephemeralSecretKey)) : nacl.box.keyPair();
+  const ephemeral = testing?.ephemeralSecretKey ? boxKeyPairFromSecretKey(Buffer.from(testing.ephemeralSecretKey)) : boxKeyPair();
   const nonce = testing?.nonce ? Buffer.from(testing.nonce) : randomBytes(NONCE_LENGTH);
   if (nonce.length !== NONCE_LENGTH) throw new Error("DHIES: invalid nonce");
 
-  const es = nacl.scalarMult(ephemeral.secretKey, recipientPublicKey);
+  const es = scalarMult(ephemeral.secretKey, recipientPublicKey);
   const ss = Buffer.from(await senderDH(Buffer.from(recipientPublicKey)));
   try {
     const k = deriveKey(es, ss, ephemeral.publicKey, senderPublicKey, recipientPublicKey);
-    const ct = nacl.secretbox(plaintext, nonce, k);
+    const ct = secretboxSeal(plaintext, nonce, k);
     secureErase(k);
     return Buffer.concat([Buffer.from([DHIES_V2_TAG]), nonce, Buffer.from(ephemeral.publicKey), Buffer.from(ct)]);
   } finally {
@@ -90,7 +90,7 @@ export async function dhiesV2Decrypt(encrypted: Uint8Array, recipientDH: StaticD
     const ss = Buffer.from(await recipientDH(Buffer.from(senderPublicKey)));
     try {
       const k = deriveKey(es, ss, ePk, senderPublicKey, recipientPublicKey);
-      const plaintext = nacl.secretbox.open(ct, nonce, k);
+      const plaintext = secretboxOpen(ct, nonce, k);
       secureErase(k);
       return plaintext ? Buffer.from(plaintext) : null;
     } finally {
@@ -145,16 +145,16 @@ export async function dhiesV3Encrypt(message: string | Uint8Array, senderDH: Sta
   checkKemKey(recipientKemPublicKey);
   const plaintext = typeof message === "string" ? Buffer.from(message, "utf8") : Buffer.from(message);
 
-  const ephemeral = testing?.ephemeralSecretKey ? nacl.box.keyPair.fromSecretKey(Buffer.from(testing.ephemeralSecretKey)) : nacl.box.keyPair();
+  const ephemeral = testing?.ephemeralSecretKey ? boxKeyPairFromSecretKey(Buffer.from(testing.ephemeralSecretKey)) : boxKeyPair();
   const nonce = testing?.nonce ? Buffer.from(testing.nonce) : randomBytes(NONCE_LENGTH);
   if (nonce.length !== NONCE_LENGTH) throw new Error("DHIES: invalid nonce");
 
-  const es = nacl.scalarMult(ephemeral.secretKey, recipientPublicKey);
+  const es = scalarMult(ephemeral.secretKey, recipientPublicKey);
   const ss = Buffer.from(await senderDH(Buffer.from(recipientPublicKey)));
   const { cipherText: kemCt, sharedSecret: kss } = mlKemEncapsulate(recipientKemPublicKey, testing?.kemRandomness);
   try {
     const k = deriveKeyV3(es, ss, kss, ephemeral.publicKey, senderPublicKey, recipientPublicKey, recipientKemPublicKey, kemCt);
-    const ct = nacl.secretbox(plaintext, nonce, k);
+    const ct = secretboxSeal(plaintext, nonce, k);
     secureErase(k);
     return Buffer.concat([Buffer.from([DHIES_V3_TAG]), nonce, Buffer.from(ephemeral.publicKey), kemCt, Buffer.from(ct)]);
   } finally {
@@ -188,7 +188,7 @@ export async function dhiesV3Decrypt(encrypted: Uint8Array, recipientDH: StaticD
     const kss = Buffer.from(await recipientDecapsulate(Buffer.from(kemCt)));
     try {
       const k = deriveKeyV3(es, ss, kss, ePk, senderPublicKey, recipientPublicKey, recipientKemPublicKey, kemCt);
-      const plaintext = nacl.secretbox.open(ct, nonce, k);
+      const plaintext = secretboxOpen(ct, nonce, k);
       secureErase(k);
       return plaintext ? Buffer.from(plaintext) : null;
     } finally {
@@ -251,9 +251,9 @@ export async function dhiesV3SignedEncrypt(message: string | Uint8Array, senderD
   checkKey(recipientPublicKey, "recipient public key");
   checkKemKey(recipientKemPublicKey);
   const plaintext = typeof message === "string" ? Buffer.from(message, "utf8") : Buffer.from(message);
-  const ephemeral = nacl.box.keyPair();
+  const ephemeral = boxKeyPair();
   const nonce = randomBytes(NONCE_LENGTH);
-  const es = nacl.scalarMult(ephemeral.secretKey, recipientPublicKey);
+  const es = scalarMult(ephemeral.secretKey, recipientPublicKey);
   const ss = Buffer.from(await senderDH(Buffer.from(recipientPublicKey)));
   const { cipherText: kemCt, sharedSecret: kss } = mlKemEncapsulate(recipientKemPublicKey);
   let body: Buffer | undefined;
@@ -265,7 +265,7 @@ export async function dhiesV3SignedEncrypt(message: string | Uint8Array, senderD
     length.writeUInt16BE(signature.length, 0);
     body = Buffer.concat([length, signature, plaintext]);
     const k = deriveKeyV3Signed(es, ss, kss, info);
-    const ct = nacl.secretbox(body, nonce, k);
+    const ct = secretboxSeal(body, nonce, k);
     secureErase(k);
     return Buffer.concat([Buffer.from([DHIES_V3_SIGNED_TAG]), nonce, Buffer.from(ephemeral.publicKey), kemCt, Buffer.from(ct)]);
   } finally {
@@ -300,7 +300,7 @@ export async function dhiesV3SignedDecrypt(encrypted: Uint8Array, recipientDH: S
     try {
       const info = v3SignedInfo(ePk, senderPublicKey, recipientPublicKey, recipientKemPublicKey, kemCt);
       const k = deriveKeyV3Signed(es, ss, kss, info);
-      const opened = nacl.secretbox.open(ct, nonce, k);
+      const opened = secretboxOpen(ct, nonce, k);
       secureErase(k);
       if (!opened || opened.length < SIGNATURE_LENGTH_BYTES) return null;
       const body = Buffer.from(opened);

@@ -1,7 +1,7 @@
 import { dearmorAndDecrypt, encryptAndArmor } from "@vaultys/saltpack";
 import { hash, hmac, secureErase } from "../crypto";
 import { Buffer } from "buffer/";
-import nacl, { BoxKeyPair } from "tweetnacl";
+import { BoxKeyPair, scalarMult } from "../nacl";
 import { KeyPair } from ".";
 import KeyManager from "./AbstractKeyManager";
 import { dhiesV2Decrypt, dhiesV2Encrypt, dhiesV3Decrypt, dhiesV3Encrypt, dhiesV3SignedDecrypt, dhiesV3SignedEncrypt, TranscriptSigner, TranscriptVerifier } from "./dhies";
@@ -76,7 +76,7 @@ export default abstract class CypherManager extends KeyManager {
       hmac: (message: string) => (hmacKey ? hmac("sha256", Buffer.from(hmacKey), "VaultysID/" + message + "/end") : undefined),
       signcrypt: async (plaintext: string, publicKeys: Buffer[]) => encryptAndArmor(plaintext, cypher as BoxKeyPair, publicKeys),
       decrypt: async (encryptedMessage: string, senderKey?: Buffer | null) => dearmorAndDecrypt(encryptedMessage, cypher as BoxKeyPair, senderKey),
-      diffieHellman: async (publicKey: Buffer) => Buffer.from(nacl.scalarMult(cypher.secretKey!, publicKey)),
+      diffieHellman: async (publicKey: Buffer) => Buffer.from(scalarMult(cypher.secretKey!, publicKey)),
     };
   }
 
