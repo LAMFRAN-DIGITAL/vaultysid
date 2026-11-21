@@ -1,3 +1,5 @@
+//go:build !vaultysid_nosaltpack
+
 package compatibility
 
 import (
