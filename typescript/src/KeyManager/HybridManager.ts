@@ -1,6 +1,6 @@
 import { hash, randomBytes } from "../crypto";
 import { Buffer } from "buffer/";
-import nacl from "tweetnacl";
+import { boxKeyPairFromSecretKey } from "../nacl";
 import { decode, encode } from "@msgpack/msgpack";
 import { generateDilithiumKeyPair, signDilithium, verifyDilithium } from "../pqCrypto";
 import CypherManager from "./CypherManager";
@@ -50,7 +50,7 @@ export default class HybridManager extends CypherManager {
       publicKey: Buffer.concat([km.edSigner.publicKey, km.pqSigner.publicKey]),
       secretKey: Buffer.concat([km.edSigner.secretKey!, km.pqSigner.secretKey!]),
     };
-    const cypher = nacl.box.keyPair.fromSecretKey(km.seed.slice(32, 64));
+    const cypher = boxKeyPairFromSecretKey(km.seed.slice(32, 64));
     km.cypher = {
       publicKey: Buffer.from(cypher.publicKey),
       secretKey: Buffer.from(cypher.secretKey),
@@ -110,7 +110,7 @@ export default class HybridManager extends CypherManager {
       secretKey: Buffer.concat([km.edSigner.secretKey!, km.pqSigner.secretKey!]),
     };
     //km.signer = generateDilithiumKeyPair(km.seed.slice(0, 32));
-    const cypher = nacl.box.keyPair.fromSecretKey(km.seed.slice(32, 64));
+    const cypher = boxKeyPairFromSecretKey(km.seed.slice(32, 64));
     km.cypher = {
       publicKey: Buffer.from(cypher.publicKey),
       secretKey: Buffer.from(cypher.secretKey),

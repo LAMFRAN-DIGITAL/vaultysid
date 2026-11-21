@@ -1,6 +1,6 @@
 import { hash, randomBytes } from "../crypto";
 import { Buffer } from "buffer/";
-import nacl from "tweetnacl";
+import { boxKeyPairFromSecretKey } from "../nacl";
 import { decode, encode } from "@msgpack/msgpack";
 import { generateDilithiumKeyPair, signDilithium, verifyDilithium } from "../pqCrypto";
 import CypherManager from "./CypherManager";
@@ -37,7 +37,7 @@ export default class DilithiumManager extends CypherManager {
     km.capability = "private";
     km.seed = sha512(entropy);
     km.signer = generateDilithiumKeyPair(km.seed.slice(0, 32));
-    const cypher = nacl.box.keyPair.fromSecretKey(km.seed.slice(32, 64));
+    const cypher = boxKeyPairFromSecretKey(km.seed.slice(32, 64));
     km.cypher = {
       publicKey: Buffer.from(cypher.publicKey),
       secretKey: Buffer.from(cypher.secretKey),
@@ -86,7 +86,7 @@ export default class DilithiumManager extends CypherManager {
     km.seed = requireBytes(data.s, "Dilithium seed", 64);
     km.signer = generateDilithiumKeyPair(km.seed.slice(0, 32));
     const seed2 = km.seed.slice(32, 64);
-    const cypher = nacl.box.keyPair.fromSecretKey(seed2);
+    const cypher = boxKeyPairFromSecretKey(seed2);
     km.cypher = {
       publicKey: Buffer.from(cypher.publicKey),
       secretKey: Buffer.from(cypher.secretKey),

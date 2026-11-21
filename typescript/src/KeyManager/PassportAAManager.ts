@@ -1,6 +1,6 @@
 import { encode } from "@msgpack/msgpack";
 import { Buffer } from "buffer/";
-import nacl from "tweetnacl";
+import { boxKeyPairFromSecretKey } from "../nacl";
 import { hash, randomBytes } from "../crypto";
 import { parsePassportKey, readDG14Hash, readDG15 } from "../passport/keys";
 import type { PassportAAReader } from "../passport/reader";
@@ -43,7 +43,7 @@ export default class PassportAAManager extends CypherManager {
     const spki = readDG15(dg15);
     const hashId = dg14 === undefined ? 0 : readDG14Hash(dg14);
     const secretKey = requireBytes(encryptionSecretKey, "X25519 secret key", 32);
-    const cypher = nacl.box.keyPair.fromSecretKey(secretKey);
+    const cypher = boxKeyPairFromSecretKey(secretKey);
     const manager = new PassportAAManager(spki, hashId, Buffer.from(cypher.publicKey));
     manager.cypher.secretKey = secretKey;
     manager.#reader = reader;

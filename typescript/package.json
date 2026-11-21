@@ -63,7 +63,6 @@
     "@vaultys/id_3": "npm:@vaultys/id@3.0.4",
     "assert": "^2.1.0",
     "baseline-browser-mapping": "^2.11.38",
-    "buffer": "^6.0.3",
     "chai": "^6.3.0",
     "crypto-browserify": "^3.12.1",
     "esbuild-loader": "^4.5.0",
@@ -79,6 +78,7 @@
     "stream-browserify": "^3.0.0",
     "tslib": "^2.9.1",
     "tsx": "^4.23.15",
+    "tweetnacl": "1.0.3",
     "typescript": "^7.0.2",
     "vm-browserify": "^1.1.2",
     "webpack": "^5.112.2",
@@ -92,8 +92,8 @@
     "@noble/post-quantum": "^0.7.1",
     "@stricahq/bip32ed25519": "^2.0.0",
     "@vaultys/saltpack": "1.0.0-beta4",
-    "cbor": "^10.0.12",
-    "tweetnacl": "^1.0.3"
+    "buffer": "^6.0.3",
+    "cbor": "^10.0.12"
   },
   "packageManager": "pnpm@12.21.0"
 }

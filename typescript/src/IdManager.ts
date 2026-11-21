@@ -8,7 +8,7 @@ import VaultysId from "./VaultysId";
 import { hash, randomBytes, secureErase } from "./crypto";
 import { decode, encode } from "@msgpack/msgpack";
 import { Buffer } from "buffer/";
-import nacl from "tweetnacl";
+import { SECRETBOX_NONCE_LENGTH, secretboxOpen, secretboxSeal } from "./nacl";
 import { VaultysBackup } from "./platform/abstract";
 import { platformCrypto } from "./platform";
 import DeprecatedKeyManager from "./KeyManager/DeprecatedKeyManager";
@@ -586,8 +586,8 @@ export default class IdManager {
       throw new Error("Invalid header for encrypted file");
     }
     const prfNonceBytes = data.slice(ENCRYPTION_HEADER.length, ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH);
-    const nonceBytes = data.slice(ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH, ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH + nacl.secretbox.nonceLength);
-    const ciphertext = data.slice(ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH + nacl.secretbox.nonceLength);
+    const nonceBytes = data.slice(ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH, ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH + SECRETBOX_NONCE_LENGTH);
+    const ciphertext = data.slice(ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH + SECRETBOX_NONCE_LENGTH);
 
     const prf = channel ? await this.requestPRF(channel, "encryption/" + Buffer.from(prfNonceBytes).toString("hex") + "/encryption") : await this.vaultysId.hmac("prf|encryption/" + Buffer.from(prfNonceBytes).toString("hex") + "/encryption|prf");
     if (prf?.length !== PRF_NONCE_LENGTH) {
@@ -598,8 +598,8 @@ export default class IdManager {
     const secretKey = hash("sha256", prf);
     secureErase(prf);
 
-    // Decrypt using nacl.secretbox.open
-    const decrypted = nacl.secretbox.open(ciphertext, nonceBytes, secretKey);
+    // Decrypt (XSalsa20-Poly1305 secretbox)
+    const decrypted = secretboxOpen(ciphertext, nonceBytes, secretKey);
     secureErase(secretKey);
 
     if (!decrypted) {
@@ -627,10 +627,10 @@ export default class IdManager {
     secureErase(prf);
 
     // Generate a random nonce for secretbox encryption
-    const nonceBytes = nacl.randomBytes(nacl.secretbox.nonceLength);
+    const nonceBytes = randomBytes(SECRETBOX_NONCE_LENGTH);
 
-    // Encrypt using nacl.secretbox
-    const ciphertext = nacl.secretbox(new Uint8Array(toEncrypt.arrayBuffer), nonceBytes, secretKey);
+    // Encrypt (XSalsa20-Poly1305 secretbox)
+    const ciphertext = secretboxSeal(new Uint8Array(toEncrypt.arrayBuffer), nonceBytes, secretKey);
     secureErase(secretKey);
 
     // Combine encryption nonce and ciphertext into a single buffer
