@@ -24,6 +24,9 @@ pub const MAX_SERVICE_ID_INPUT_LENGTH: usize = 300;
 pub const SERVICE_ANCHOR_LABEL: &str = "vaultysid/service-anchor/v1";
 /// Where a service serves its anchor, under its origin.
 pub const SERVICE_ANCHOR_PATH: &str = "/.well-known/vaultysid-service";
+/// Prefix of a contact id (RFC §3.4): `contact:` and exactly 64 lowercase
+/// hexadecimal digits. Never the start of a web origin or of an `app:` id.
+pub const CONTACT_PREFIX: &str = "contact:";
 
 const DERIVATION_VERSION: &str = "v1";
 const RAW_INCIPIT: &[u8] = b"VAULTYS_RAW";
@@ -189,6 +192,18 @@ pub fn canonical_service_id(input: &str, allow_development_hosts: bool) -> Resul
         || input.bytes().any(|c| b"%\\@?#".contains(&c))
     {
         return Err(invalid());
+    }
+    // a contact id is matched before anything else, and only in its exact form
+    if let Some(value) = input.strip_prefix(CONTACT_PREFIX) {
+        return if value.len() == 64
+            && value
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        {
+            Ok(input.to_string())
+        } else {
+            Err(invalid())
+        };
     }
     if let Some(name) = input.strip_prefix("app:") {
         return if is_dns_name(name) {
@@ -411,6 +426,11 @@ pub fn service_anchor_url(service_id: &str) -> Result<String> {
     if canonical.starts_with("app:") {
         return Err(Error::Other(
             "an app: service id has no web origin to publish an anchor".into(),
+        ));
+    }
+    if canonical.starts_with(CONTACT_PREFIX) {
+        return Err(Error::Other(
+            "a contact: service id has no web origin to publish an anchor".into(),
         ));
     }
     Ok(format!("{canonical}{SERVICE_ANCHOR_PATH}"))

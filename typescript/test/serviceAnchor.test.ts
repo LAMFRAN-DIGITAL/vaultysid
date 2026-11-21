@@ -30,6 +30,7 @@ describe("Service anchors", () => {
   it("gives the anchor URL of an origin, none for app: ids", () => {
     assert.strictEqual(serviceAnchorUrl("https://Service-A.test/"), "https://service-a.test/.well-known/vaultysid-service");
     assert.throws(() => serviceAnchorUrl("app:test.service.c"), /no web origin/);
+    assert.throws(() => serviceAnchorUrl(`contact:${"ab".repeat(32)}`), /no web origin/);
   });
 
   it("pins the first identity and reports a change", async () => {

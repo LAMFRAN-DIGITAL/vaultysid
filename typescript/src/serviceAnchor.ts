@@ -8,7 +8,7 @@
 
 import { Buffer } from "buffer/";
 import VaultysId from "./VaultysId";
-import { canonicalServiceId, isCanonicalServiceId } from "./serviceIdentity";
+import { canonicalServiceId, CONTACT_PREFIX, isCanonicalServiceId } from "./serviceIdentity";
 
 export const SERVICE_ANCHOR_LABEL = "vaultysid/service-anchor/v1";
 export const SERVICE_ANCHOR_PATH = "/.well-known/vaultysid-service";
@@ -48,10 +48,11 @@ export function serviceAnchorSignedData(serviceId: string, id: Uint8Array): Uint
   return concat(lp(utf8(SERVICE_ANCHOR_LABEL)), HEADER, lp(utf8(serviceId)), lp(id));
 }
 
-/** URL where the anchor of a web origin is served. Throws for an `app:` id, which has no origin. */
+/** URL where the anchor of a web origin is served. Throws for an `app:` or `contact:` id, which has no origin. */
 export function serviceAnchorUrl(serviceId: string): string {
   const canonical = canonicalServiceId(serviceId);
   if (canonical.startsWith("app:")) throw new Error("an app: service id has no web origin to publish an anchor");
+  if (canonical.startsWith(CONTACT_PREFIX)) throw new Error("a contact: service id has no web origin to publish an anchor");
   return `${canonical}${SERVICE_ANCHOR_PATH}`;
 }
 
