@@ -198,6 +198,17 @@ make build-all       # Build for all platforms
 make build-minimal   # Build without post-quantum crypto
 ```
 
+Saltpack encryption (`Encrypt`, `Signcrypt`, `Decrypt` on `VaultysID`) can be
+left out with `-tags vaultysid_nosaltpack`. Its dependency
+`github.com/keybase/go-codec` imports `net/rpc` and therefore `net/http`; with
+the tag, the library links no network package, which suits a `gomobile`
+library that only needs identities, service identities and the secure channel:
+
+```bash
+go list -tags vaultysid_nosaltpack -deps ./pkg/... | grep -E '^net(/http|/rpc)?$'   # prints nothing
+go test -tags vaultysid_nosaltpack ./...
+```
+
 ### Testing
 
 ```bash
