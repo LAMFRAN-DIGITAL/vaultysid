@@ -11,6 +11,9 @@ import { canonicalServiceId, deriveServiceEntropy, deriveServiceIdentity, SERVIC
 
 type CanonicalCase = { input: string; options: { allowDevelopmentHosts?: boolean }; output: string };
 
+/** A public 256-bit test value for contact ids (RFC §3.4). */
+export const CONTACT_HEX = "c0ffee00" + "0123456789abcdef".repeat(3) + "fedcba98";
+
 const CANONICAL_INPUTS: Array<[string, boolean]> = [
   ["https://Example.com/", false],
   ["https://example.com", false],
@@ -67,6 +70,26 @@ const CANONICAL_INPUTS: Array<[string, boolean]> = [
   ["example.com", false],
   ["ftp://example.com", false],
   ["did:vaultys:01ab", false],
+  [`contact:${CONTACT_HEX}`, false],
+  [`contact:${CONTACT_HEX}`, true],
+  [`contact:${CONTACT_HEX.toUpperCase()}`, false],
+  [`contact:${CONTACT_HEX.slice(0, 63)}A`, false],
+  [`CONTACT:${CONTACT_HEX}`, false],
+  [`Contact:${CONTACT_HEX}`, false],
+  [`contact:${CONTACT_HEX.slice(1)}`, false],
+  [`contact:${CONTACT_HEX}0`, false],
+  [`contact:${CONTACT_HEX.slice(0, 32)}`, false],
+  [`contact:${CONTACT_HEX.slice(0, 63)}g`, false],
+  ["contact:", false],
+  [`contact:${CONTACT_HEX}/`, false],
+  [`contact://${CONTACT_HEX}`, false],
+  [`contact:0x${CONTACT_HEX.slice(2)}`, false],
+  [`contact:${CONTACT_HEX}.example.com`, false],
+  ["contact:https://example.com", false],
+  ["contact:example.com", false],
+  [`https://contact:${CONTACT_HEX}`, false],
+  [`app:contact.${CONTACT_HEX.slice(0, 8)}`, false],
+  ["https://contact.example.com", false],
 ];
 
 const lp = (s: string) => {
@@ -79,7 +102,7 @@ const lp = (s: string) => {
 export const testMaster = (name: string) => Uint8Array.from(createHash("sha256").update(`vaultysid/test/${name}`).digest());
 
 const DERIVE_CASES: Array<{ service: string; alg: ServiceAlgorithm; role?: ServiceRole; postQuantum?: boolean }> = [];
-for (const service of ["https://Service-A.test:443/", "https://service-b.test", "app:test.service.c"]) {
+for (const service of ["https://Service-A.test:443/", "https://service-b.test", "app:test.service.c", `contact:${CONTACT_HEX}`]) {
   for (const alg of ["ed25519", "dilithium", "dilithium_ed25519"] as const) DERIVE_CASES.push({ service, alg });
 }
 DERIVE_CASES.push({ service: "https://service-a.test", alg: "dilithium_ed25519", postQuantum: true });

@@ -4,7 +4,7 @@ import { Buffer } from "buffer/";
 import { IdManager, MemoryChannel, MemoryStorage, VaultysId } from "..";
 import "./shims";
 import { canonicalServiceId, deriveServiceIdentity, isCanonicalServiceId, MASTER_SECRET_LENGTH, type ServiceAlgorithm } from "../src/serviceIdentity";
-import { buildVectors, testMaster, VECTORS_PATH } from "./interops/generate-service-identity-vectors";
+import { buildVectors, CONTACT_HEX, testMaster, VECTORS_PATH } from "./interops/generate-service-identity-vectors";
 
 // rfc/SERVICE-IDENTITIES.md
 
@@ -49,6 +49,41 @@ describe("Service identities", () => {
 
     it("never decodes punycode", () => {
       assert.strictEqual(canonicalServiceId("https://XN--XAMPLE-2OF.COM/"), "https://xn--xample-2of.com");
+    });
+
+    it("accepts a contact id only as contact: and 64 lowercase hex digits", () => {
+      const id = `contact:${CONTACT_HEX}`;
+      assert.strictEqual(canonicalServiceId(id), id);
+      assert.strictEqual(canonicalServiceId(id, { allowDevelopmentHosts: true }), id);
+      assert.ok(isCanonicalServiceId(id));
+      for (const s of [
+        `contact:${CONTACT_HEX.toUpperCase()}`, // upper case is refused, not normalized
+        `contact:${CONTACT_HEX.slice(0, 63)}A`,
+        `CONTACT:${CONTACT_HEX}`,
+        `Contact:${CONTACT_HEX}`,
+        `contact:${CONTACT_HEX.slice(1)}`, // 63 digits
+        `contact:${CONTACT_HEX}0`, // 65 digits
+        `contact:${CONTACT_HEX.slice(0, 32)}`, // 128 bits
+        `contact:${CONTACT_HEX.slice(0, 63)}g`,
+        "contact:",
+        `contact: ${CONTACT_HEX}`,
+        `contact:${CONTACT_HEX}/`,
+        `contact://${CONTACT_HEX}`,
+        `contact:0x${CONTACT_HEX.slice(2)}`,
+        `contact:${CONTACT_HEX}?x`,
+      ]) {
+        assert.throws(() => canonicalServiceId(s), /invalid service id/, s);
+        assert.ok(!isCanonicalServiceId(s), s);
+      }
+    });
+
+    it("never mixes a contact id with a domain", () => {
+      for (const s of [`contact:${CONTACT_HEX}.example.com`, "contact:https://example.com", "contact:example.com", `contact:app:${CONTACT_HEX}`, `https://contact:${CONTACT_HEX}`, `app:contact:${CONTACT_HEX}`]) {
+        assert.throws(() => canonicalServiceId(s), /invalid service id/, s);
+      }
+      // `contact` as a DNS label stays a web origin or an app id, never a contact id
+      assert.strictEqual(canonicalServiceId("https://Contact.Example.com/"), "https://contact.example.com");
+      assert.strictEqual(canonicalServiceId("app:contact.example"), "app:contact.example");
     });
 
     it("isCanonicalServiceId never throws", () => {
@@ -110,6 +145,19 @@ describe("Service identities", () => {
       const data = Buffer.from("message");
       const signature = await id.sign(data);
       assert.ok(signature && VaultysId.fromId(id.id).verify(data, signature));
+    });
+
+    it("gives a contact id its own identity, unrelated to any web or app identity", async () => {
+      const contact = await deriveServiceIdentity(MASTER, `contact:${CONTACT_HEX}`);
+      const again = await deriveServiceIdentity(Uint8Array.from(MASTER), `contact:${CONTACT_HEX}`);
+      assert.strictEqual(contact.did, again.did);
+      assert.strictEqual(contact.type, 1);
+      const other = await deriveServiceIdentity(MASTER, `contact:${"0".repeat(63)}1`);
+      const web = await deriveServiceIdentity(MASTER, "https://contact.example.com");
+      const app = await deriveServiceIdentity(MASTER, "app:contact.example");
+      const keys = [contact, other, web, app].map((i) => Uint8Array.from(i.keyManager.signer.publicKey));
+      for (let a = 0; a < keys.length; a++) for (let b = a + 1; b < keys.length; b++) assert.deepStrictEqual(commonWindows(keys[a], keys[b]), [], `${a} ${b}`);
+      await assert.rejects(deriveServiceIdentity(MASTER, `contact:${CONTACT_HEX.toUpperCase()}`), /invalid service id/);
     });
 
     it("leaves the master secret untouched", async () => {

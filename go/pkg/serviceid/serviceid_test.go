@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/vaultys/vaultysid/go/pkg/vaultysid"
@@ -212,5 +213,45 @@ func TestAnchorRoundTripDilithium(t *testing.T) {
 	}
 	if _, err := AnchorURL("app:test.service.c"); err == nil {
 		t.Error("anchor URL for app: id")
+	}
+	if _, err := AnchorURL("contact:" + strings.Repeat("ab", 32)); err == nil {
+		t.Error("anchor URL for contact: id")
+	}
+}
+
+func TestContactID(t *testing.T) {
+	hexValue := strings.Repeat("0123456789abcdef", 4)
+	id := ContactPrefix + hexValue
+	if c, err := CanonicalServiceID(id, false); err != nil || c != id {
+		t.Fatalf("CanonicalServiceID(%q) = %q, %v", id, c, err)
+	}
+	for _, s := range []string{
+		ContactPrefix + strings.ToUpper(hexValue),
+		"CONTACT:" + hexValue,
+		ContactPrefix + hexValue[1:],
+		ContactPrefix + hexValue + "0",
+		ContactPrefix + hexValue[:63] + "g",
+		ContactPrefix,
+		ContactPrefix + hexValue + "/",
+		ContactPrefix + hexValue + ".example.com",
+		"contact:https://example.com",
+		"https://contact:" + hexValue,
+		"app:contact:" + hexValue,
+	} {
+		if _, err := CanonicalServiceID(s, true); err == nil {
+			t.Errorf("CanonicalServiceID(%q) accepted", s)
+		}
+	}
+	master := sha256.Sum256([]byte("vaultysid/test/master"))
+	a, err := Derive(master[:], id, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Derive(master[:], "app:contact.example", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.DID() == b.DID() {
+		t.Error("contact and app identities coincide")
 	}
 }

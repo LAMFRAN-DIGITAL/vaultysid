@@ -61,6 +61,9 @@ func AnchorURL(serviceID string) (string, error) {
 	if strings.HasPrefix(canonical, "app:") {
 		return "", errors.New("an app: service id has no web origin to publish an anchor")
 	}
+	if strings.HasPrefix(canonical, ContactPrefix) {
+		return "", errors.New("a contact: service id has no web origin to publish an anchor")
+	}
 	return canonical + AnchorPath, nil
 }
 

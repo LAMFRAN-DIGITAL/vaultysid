@@ -61,6 +61,7 @@ var (
 	webRe          = regexp.MustCompile(`(?i)^(https?)://([^/:\[\]]*)(?::([^/]*))?(/?)$`)
 	webIPv6Re      = regexp.MustCompile(`(?i)^(https?)://(\[[0-9a-f:.]+\])(?::([^/]*))?(/?)$`)
 	appRe          = regexp.MustCompile(`^app:(.*)$`)
+	contactRe      = regexp.MustCompile(`^contact:[0-9a-f]{64}$`)
 	labelRe        = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	ipv4Re         = regexp.MustCompile(`^(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])){3}$`)
 	portRe         = regexp.MustCompile(`^[1-9][0-9]{0,4}$`)
@@ -120,10 +121,21 @@ func punycodeLabelValid(label string) bool {
 	return ok
 }
 
+// ContactPrefix starts a contact id (RFC §3.4): "contact:" and exactly 64 lowercase hexadecimal digits.
+// It is never the start of a web origin or of an app: id.
+const ContactPrefix = "contact:"
+
 // CanonicalServiceID returns the canonical identifier of a service (RFC §3), or ErrInvalidServiceID.
 func CanonicalServiceID(input string, allowDevelopmentHosts bool) (string, error) {
 	if len(input) == 0 || len(input) > MaxServiceIDInputLength || !printableASCII.MatchString(input) || forbidden.MatchString(input) {
 		return "", ErrInvalidServiceID
+	}
+	// a contact id is matched before anything else, and only in its exact form
+	if strings.HasPrefix(input, ContactPrefix) {
+		if !contactRe.MatchString(input) {
+			return "", ErrInvalidServiceID
+		}
+		return input, nil
 	}
 	if m := appRe.FindStringSubmatch(input); m != nil {
 		if !isDNSName(m[1]) {

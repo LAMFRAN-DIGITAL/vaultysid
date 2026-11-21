@@ -149,6 +149,42 @@ async fn refusals_and_separation() {
 }
 
 #[tokio::test]
+async fn contact_ids() {
+    let hex_value = "0123456789abcdef".repeat(4);
+    let id = format!("{CONTACT_PREFIX}{hex_value}");
+    assert_eq!(canonical_service_id(&id, false).unwrap(), id);
+    for s in [
+        format!("{CONTACT_PREFIX}{}", hex_value.to_uppercase()),
+        format!("CONTACT:{hex_value}"),
+        format!("{CONTACT_PREFIX}{}", &hex_value[1..]),
+        format!("{CONTACT_PREFIX}{hex_value}0"),
+        format!("{CONTACT_PREFIX}{}g", &hex_value[..63]),
+        CONTACT_PREFIX.to_string(),
+        format!("{CONTACT_PREFIX}{hex_value}/"),
+        format!("{CONTACT_PREFIX}{hex_value}.example.com"),
+        "contact:https://example.com".to_string(),
+        format!("https://contact:{hex_value}"),
+        format!("app:contact:{hex_value}"),
+    ] {
+        assert!(canonical_service_id(&s, true).is_err(), "{s}");
+    }
+    let master = [1u8; 32];
+    let contact =
+        derive_service_identity(&master, &id, ServiceAlgorithm::Ed25519, ServiceRole::Person)
+            .await
+            .unwrap();
+    let app = derive_service_identity(
+        &master,
+        "app:contact.example",
+        ServiceAlgorithm::Ed25519,
+        ServiceRole::Person,
+    )
+    .await
+    .unwrap();
+    assert_ne!(contact.did(), app.did());
+}
+
+#[tokio::test]
 async fn anchor_vectors() {
     let v = load("service-anchor-vectors.json");
     let master: [u8; 32] = Sha256::digest(b"vaultysid/test/anchors/service").into();
@@ -185,6 +221,7 @@ async fn anchor_vectors() {
         "https://service-a.test/.well-known/vaultysid-service"
     );
     assert!(service_anchor_url("app:test.service.c").is_err());
+    assert!(service_anchor_url(&format!("contact:{}", "ab".repeat(32))).is_err());
 }
 
 #[tokio::test]

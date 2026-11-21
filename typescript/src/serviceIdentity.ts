@@ -47,6 +47,10 @@ const FORBIDDEN = /[%\\@?#]/;
 const WEB = /^(https?):\/\/([^/:[\]]*)(?::([^/]*))?(\/?)$/i;
 const WEB_IPV6 = /^(https?):\/\/(\[[0-9a-f:.]+\])(?::([^/]*))?(\/?)$/i;
 const APP = /^app:(.*)$/;
+/** Prefix of a contact id (RFC §3.4). Never the start of a web origin (`http://`, `https://`) or of an `app:` id. */
+export const CONTACT_PREFIX = "contact:";
+/** `contact:` and exactly 64 lowercase hexadecimal digits: one spelling for one 256-bit value. */
+const CONTACT = /^contact:[0-9a-f]{64}$/;
 const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const IPV4 = /^(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])){3}$/;
 const PORT = /^[1-9][0-9]{0,4}$/;
@@ -195,7 +199,9 @@ function canonicalIpv6Origin(match: RegExpExecArray, input: string, dev: boolean
 /**
  * Canonical identifier of a service (RFC §3). Accepted forms:
  * - a web origin `https://host[:port]`, optionally followed by `/`; the output equals `URL.origin`;
- * - an application id `app:<reverse-dns>`, in lowercase.
+ * - an application id `app:<reverse-dns>`, in lowercase;
+ * - a contact id `contact:<64 lowercase hex digits>`, a 256-bit value that names one peer-to-peer relationship
+ *   (for example the SHA-256 of an invitation secret, never the secret itself).
  * Anything else, or anything ambiguous, throws `Error("invalid service id")`. Two spellings of the same
  * service give the same output; nothing is ever "repaired" beyond scheme and host case and the default port.
  */
@@ -205,6 +211,11 @@ export function canonicalServiceId(input: string, options: ServiceIdOptions = {}
   if (typeof options !== "object" || options === null) invalidServiceId();
   const dev = options.allowDevelopmentHosts === true;
 
+  // a contact id is matched before anything else, and only in its exact form: never repaired, never read as a host
+  if (input.startsWith(CONTACT_PREFIX)) {
+    if (!CONTACT.test(input)) invalidServiceId();
+    return input;
+  }
   const app = APP.exec(input);
   if (app) {
     if (!isDnsName(app[1] ?? "")) invalidServiceId();
