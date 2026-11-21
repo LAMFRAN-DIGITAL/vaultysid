@@ -1,6 +1,6 @@
 import { secureErase } from "../crypto";
 import cbor from "cbor";
-import nacl from "tweetnacl";
+import { boxKeyPairFromSecretKey } from "../nacl";
 import SoftCredentials from "../platform/SoftCredentials";
 import { KeyPair } from ".";
 import { decode, encode } from "@msgpack/msgpack";
@@ -154,7 +154,7 @@ export default class Fido2PRFManager extends Fido2Manager {
       const { prf } = result.getClientExtensionResults();
       const first = prf?.results?.first;
       if (!first) throw new Error("PRF failed");
-      const cypher = nacl.box.keyPair.fromSecretKey(new Uint8Array(first as any));
+      const cypher = boxKeyPairFromSecretKey(new Uint8Array(first as any));
       this.cypher = {
         publicKey: Buffer.from(cypher.publicKey),
         secretKey: Buffer.from(cypher.secretKey),

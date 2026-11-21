@@ -6,6 +6,14 @@ import { Buffer } from "buffer/";
 import { PQ_COSE_ALG } from "./pqCrypto";
 import CypherManager from "./KeyManager/CypherManager";
 import DeprecatedKeyManager from "./KeyManager/DeprecatedKeyManager";
+import { DILITHIUM_PK_LENGTH } from "./KeyManager/DilithiumManager";
+import { DHIES_V3_SIGNED_TAG } from "./KeyManager/dhies";
+import { dhiesV1LegacyDecrypt } from "./KeyManager/dhiesV1Legacy";
+import { getCypherPublicKeyFromId } from "./KeyManager/CypherManager";
+import { decodeRecord, isBytes } from "./KeyManager/validation";
+import type { Ed25519Signer } from "./Ed25519Signer";
+import PassportAAManager, { TYPE_PASSPORT_AA } from "./KeyManager/PassportAAManager";
+import type { PassportAAOptions } from "./KeyManager/PassportAAManager";
 
 const TYPE_MACHINE = 0;
 const TYPE_PERSON = 1;
@@ -13,7 +21,18 @@ const TYPE_ORGANIZATION = 2;
 const TYPE_FIDO2 = 3;
 const TYPE_FIDO2PRF = 4;
 
-const KNOWN_TYPES = [TYPE_MACHINE, TYPE_PERSON, TYPE_ORGANIZATION, TYPE_FIDO2, TYPE_FIDO2PRF];
+// Post-quantum identities (rfc/PQ-ENCRYPTION.md §4): type = 0x10 | role. They
+// carry an ML-KEM-768 key and a seed-derived PRF key, with a Dilithium or Hybrid
+// key manager. 0x13 / 0x14 are reserved for future PQ hardware identities.
+const TYPE_PQ_FLAG = 0x10;
+const PQ_TYPES = [TYPE_PQ_FLAG | TYPE_MACHINE, TYPE_PQ_FLAG | TYPE_PERSON, TYPE_PQ_FLAG | TYPE_ORGANIZATION];
+
+const KNOWN_TYPES = [TYPE_MACHINE, TYPE_PERSON, TYPE_ORGANIZATION, TYPE_FIDO2, TYPE_FIDO2PRF, TYPE_PASSPORT_AA, ...PQ_TYPES];
+
+const isPostQuantumType = (type: number) => PQ_TYPES.includes(type);
+const roleOf = (type: number) => type & 0x0f;
+
+type Algorithm = "dilithium_ed25519" | "dilithium" | "ed25519";
 
 // Signature domains. Every signature produced through VaultysId is computed over
 // SHA-256(domain || data) so that a signature obtained in one context can never
@@ -24,6 +43,22 @@ const KNOWN_TYPES = [TYPE_MACHINE, TYPE_PERSON, TYPE_ORGANIZATION, TYPE_FIDO2, T
 const SIGN_INCIPIT = Buffer.from("VAULTYS_SIGN", "utf8");
 export const HANDSHAKE_INCIPIT = Buffer.from("VAULTYS_HANDSHAKE_V1", "utf8");
 export const RAW_INCIPIT = Buffer.from("VAULTYS_RAW", "utf8");
+// - VAULTYS_DHIES_V3S: PROPOSAL, sender signature inside signed DHIES v3 messages
+//   (rfc/PQ-ENCRYPTION.md, Appendix A), produced only with `{ senderSignature: true }`
+export const DHIES_V3S_INCIPIT = Buffer.from("VAULTYS_DHIES_V3S", "utf8");
+
+/**
+ * PROPOSAL (rfc/PQ-ENCRYPTION.md, Appendix A). Options of dhiesEncrypt: with
+ * `senderSignature: true`, a post-quantum recipient gets a signed DHIES v3 message
+ * (tag 0x04) carrying the sender's ML-DSA signature. Costs the signature size
+ * (4.6 kB for ML-DSA-87) and deniability: the recipient can show the signature.
+ */
+export type DhiesEncryptOptions = { senderSignature?: boolean };
+/**
+ * PROPOSAL. Options of dhiesDecrypt: "accept" also opens signed messages,
+ * "require" only opens signed messages. Without options, signed messages are refused.
+ */
+export type DhiesDecryptOptions = { senderSignature?: "accept" | "require" };
 
 const toBuffer = (data: Buffer | Uint8Array | string, encoding: BufferEncoding = "hex") => (typeof data === "string" ? Buffer.from(data, encoding) : Buffer.from(data));
 
@@ -103,6 +138,17 @@ export default class VaultysId {
     if (!cleanId || cleanId.length < 2) throw new Error("empty or unsupported id");
     const type = cleanId[0];
     if (!KNOWN_TYPES.includes(type)) throw new Error("unknown identity type " + type);
+    if (type === TYPE_PASSPORT_AA) return new VaultysId(PassportAAManager.fromId(cleanId.slice(1)), certificate, type);
+    if (isPostQuantumType(type)) {
+      // dispatch on the signing key, never on the total length
+      const data = decodeRecord(cleanId.slice(1), "post-quantum id");
+      if (data.v !== 1) throw new Error("post-quantum ids must be serialized with version 1");
+      if (data.k === undefined) throw new Error("post-quantum id without ML-KEM key");
+      const xLength = isBytes(data.x) ? data.x.length : -1;
+      if (xLength === DILITHIUM_PK_LENGTH) return new VaultysId(DilithiumManager.fromId(cleanId.slice(1)), certificate, type);
+      if (xLength === 32 + DILITHIUM_PK_LENGTH) return new VaultysId(HybridManager.fromId(cleanId.slice(1)), certificate, type);
+      throw new Error("post-quantum id with an unsupported key manager");
+    }
     if (type === TYPE_FIDO2) {
       const f2m = Fido2Manager.fromId(cleanId.slice(1));
       return new VaultysId(f2m, certificate, type);
@@ -240,13 +286,23 @@ export default class VaultysId {
     return options;
   };
 
-  static async fromEntropy(entropy: Buffer, type: number, alg: "dilithium_ed25519" | "dilithium" | "ed25519" = "ed25519") {
-    const cleanedEntropy = entropy as Buffer;
+  /**
+   * Creates an identity from 32 bytes of entropy. The entropy is copied: the key manager owns its copy and may erase
+   * it, the caller's buffer is left untouched. Any other length is refused (the key managers hash the entropy and
+   * would otherwise accept a weak or truncated value silently).
+   */
+  static async fromEntropy(entropy: Buffer | Uint8Array, type: number, alg: Algorithm = "ed25519") {
+    if (type === TYPE_PASSPORT_AA) throw new Error("Use VaultysId.fromPassportAA to create a passport identity");
+    if (!(entropy instanceof Uint8Array) || entropy.length !== 32) throw new Error("entropy must be 32 bytes");
+    const cleanedEntropy = Buffer.from(Uint8Array.from(entropy));
+    if (isPostQuantumType(type) && alg === "ed25519") throw new Error("post-quantum identities require a dilithium or dilithium_ed25519 key manager");
     if (alg === "dilithium") {
       const km = await DilithiumManager.createFromEntropy(cleanedEntropy);
+      if (isPostQuantumType(type)) km.enablePostQuantum();
       return new VaultysId(km, undefined, type);
     } else if (alg === "dilithium_ed25519") {
       const km = await HybridManager.createFromEntropy(cleanedEntropy);
+      if (isPostQuantumType(type)) km.enablePostQuantum();
       return new VaultysId(km, undefined, type);
     } else {
       const km = await Ed25519Manager.createFromEntropy(cleanedEntropy);
@@ -296,6 +352,27 @@ export default class VaultysId {
     return VaultysId.fromEntropy(entropy, TYPE_PERSON);
   }
 
+  /** Create a type 01 person identity with external Ed25519 signing and a local X25519 key. */
+  static async fromSigner(signer: Ed25519Signer, encryptionSecretKey: Uint8Array) {
+    return new VaultysId(await Ed25519Manager.fromSigner(signer, encryptionSecretKey), undefined, TYPE_PERSON);
+  }
+
+  /** Create a type 05 identity backed by a passport Active Authentication key. */
+  static fromPassportAA(options: PassportAAOptions) {
+    return new VaultysId(PassportAAManager.fromPassport(options), undefined, TYPE_PASSPORT_AA);
+  }
+
+  /** @internal Copy the identity for use at a protocol-specific serialization version. */
+  copyForProtocol() {
+    if (this.keyManager.capability === "public") return VaultysId.fromId(this.id);
+    if (this.keyManager instanceof PassportAAManager) return new VaultysId(this.keyManager.copyForProtocol(), undefined, this.type);
+    if (this.keyManager instanceof Ed25519Manager) {
+      const copy = this.keyManager.copyWithExternalSigner();
+      if (copy) return new VaultysId(copy, undefined, this.type);
+    }
+    return VaultysId.fromSecret(this.getSecret());
+  }
+
   /**
    * Restore a VaultysId from its secret. Malformed input throws
    * `Error("Invalid VaultysId secret: ...")`, never an uncaught TypeError.
@@ -316,6 +393,15 @@ export default class VaultysId {
     if (secretBuffer.length < 2) throw new Error("empty secret");
     const type = secretBuffer[0];
     if (!KNOWN_TYPES.includes(type)) throw new Error("unknown identity type " + type);
+    if (type === TYPE_PASSPORT_AA) throw new Error("Restore a passport identity with VaultysId.fromPassportAA");
+    if (isPostQuantumType(type)) {
+      let pqm: DilithiumManager | HybridManager;
+      if (secretBuffer.length === 73) pqm = DilithiumManager.fromSecret(secretBuffer.slice(1));
+      else if (secretBuffer.length === 84) pqm = HybridManager.fromSecret(secretBuffer.slice(1));
+      else throw new Error("post-quantum secret with an unsupported key manager");
+      if (pqm.version !== 1) throw new Error("post-quantum secrets must be serialized with version 1");
+      return new VaultysId(pqm.enablePostQuantum(), undefined, type);
+    }
     if (type == TYPE_FIDO2) {
       const f2m = Fido2Manager.fromSecret(secretBuffer.slice(1));
       return new VaultysId(f2m, undefined, type);
@@ -343,43 +429,28 @@ export default class VaultysId {
     }
   }
 
-  static async generatePerson(alg: "dilithium_ed25519" | "dilithium" | "ed25519" = "ed25519") {
-    if (alg === "dilithium") {
-      const km = await DilithiumManager.generate();
-      return new VaultysId(km, undefined, TYPE_PERSON);
-    } else if (alg === "dilithium_ed25519") {
-      const km = await HybridManager.generate();
-      return new VaultysId(km, undefined, TYPE_PERSON);
-    } else {
-      const km = await Ed25519Manager.generate();
-      return new VaultysId(km, undefined, TYPE_PERSON);
-    }
+  /**
+   * @param postQuantum create a post-quantum identity (type 0x10 | role): requires
+   * a dilithium or dilithium_ed25519 key manager.
+   */
+  static async generatePerson(alg: Algorithm = "ed25519", postQuantum = false) {
+    return VaultysId.fromEntropy(randomBytes(32), postQuantum ? TYPE_PQ_FLAG | TYPE_PERSON : TYPE_PERSON, alg);
   }
 
-  static async generateOrganization(alg: "dilithium_ed25519" | "dilithium" | "ed25519" = "ed25519") {
-    if (alg === "dilithium") {
-      const km = await DilithiumManager.generate();
-      return new VaultysId(km, undefined, TYPE_ORGANIZATION);
-    } else if (alg === "dilithium_ed25519") {
-      const km = await HybridManager.generate();
-      return new VaultysId(km, undefined, TYPE_ORGANIZATION);
-    } else {
-      const km = await Ed25519Manager.generate();
-      return new VaultysId(km, undefined, TYPE_ORGANIZATION);
-    }
+  /**
+   * @param postQuantum create a post-quantum identity (type 0x10 | role): requires
+   * a dilithium or dilithium_ed25519 key manager.
+   */
+  static async generateOrganization(alg: Algorithm = "ed25519", postQuantum = false) {
+    return VaultysId.fromEntropy(randomBytes(32), postQuantum ? TYPE_PQ_FLAG | TYPE_ORGANIZATION : TYPE_ORGANIZATION, alg);
   }
 
-  static async generateMachine(alg: "dilithium_ed25519" | "dilithium" | "ed25519" = "ed25519") {
-    if (alg === "dilithium") {
-      const km = await DilithiumManager.generate();
-      return new VaultysId(km, undefined, TYPE_MACHINE);
-    } else if (alg === "dilithium_ed25519") {
-      const km = await HybridManager.generate();
-      return new VaultysId(km, undefined, TYPE_MACHINE);
-    } else {
-      const km = await Ed25519Manager.generate();
-      return new VaultysId(km, undefined, TYPE_MACHINE);
-    }
+  /**
+   * @param postQuantum create a post-quantum identity (type 0x10 | role): requires
+   * a dilithium or dilithium_ed25519 key manager.
+   */
+  static async generateMachine(alg: Algorithm = "ed25519", postQuantum = false) {
+    return VaultysId.fromEntropy(randomBytes(32), postQuantum ? TYPE_PQ_FLAG | TYPE_MACHINE : TYPE_MACHINE, alg);
   }
 
   get relationshipCertificate() {
@@ -405,6 +476,23 @@ export default class VaultysId {
   }
 
   get didDocument() {
+    const kem = (this.keyManager as CypherManager).kem;
+    const keyAgreement = [
+      {
+        id: `${this.did}#keys-2`,
+        type: this.keyManager.encType,
+        controller: this.did,
+        publicKeyMultibase: "m" + Buffer.from(this.keyManager.cypher.publicKey).toString("base64"),
+      },
+    ];
+    if (kem) {
+      keyAgreement.push({
+        id: `${this.did}#keys-3`,
+        type: "MLKEM768KeyAgreementKey2025",
+        controller: this.did,
+        publicKeyMultibase: "m" + Buffer.from(kem.publicKey).toString("base64"),
+      });
+    }
     return {
       "@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/suites/ed25519-2020/v1"],
       id: this.did,
@@ -416,14 +504,7 @@ export default class VaultysId {
           publicKeyMultibase: "m" + Buffer.from(this.keyManager.signer.publicKey).toString("base64"),
         },
       ],
-      keyAgreement: [
-        {
-          id: `${this.did}#keys-2`,
-          type: this.keyManager.encType,
-          controller: this.did,
-          publicKeyMultibase: "m" + Buffer.from(this.keyManager.cypher.publicKey).toString("base64"),
-        },
-      ],
+      keyAgreement,
     };
   }
 
@@ -432,6 +513,8 @@ export default class VaultysId {
   }
 
   toVersion(v: 0 | 1) {
+    // Post-quantum and passport AA IDs exist only in version 1.
+    if (this.isPostQuantum() || this.type === TYPE_PASSPORT_AA) return this;
     this.keyManager.version = v;
     return this;
   }
@@ -440,16 +523,21 @@ export default class VaultysId {
     return this.keyManager.version;
   }
 
+  // role checks ignore the post-quantum flag
   isHardware() {
-    return this.type === TYPE_FIDO2 || this.type === TYPE_FIDO2PRF;
+    return roleOf(this.type) === TYPE_FIDO2 || roleOf(this.type) === TYPE_FIDO2PRF || this.type === TYPE_PASSPORT_AA;
   }
 
   isMachine() {
-    return this.type === TYPE_MACHINE;
+    return roleOf(this.type) === TYPE_MACHINE;
   }
 
   isPerson() {
-    return this.type === TYPE_PERSON;
+    return roleOf(this.type) === TYPE_PERSON;
+  }
+
+  isPostQuantum() {
+    return isPostQuantumType(this.type);
   }
 
   getOTPHmac(timelock = 1 * 3600000) {
@@ -505,14 +593,33 @@ export default class VaultysId {
    * @param recipientId Recipient's VaultysId ID
    * @returns Encrypted message or null if encryption fails
    */
-  async dhiesEncrypt(message: string | Buffer, recipientId: Buffer | string): Promise<Buffer | null> {
+  async dhiesEncrypt(message: string | Buffer, recipientId: Buffer | string, options?: DhiesEncryptOptions): Promise<Buffer | null> {
     let cleanId: Buffer;
     if (typeof recipientId === "string") {
       cleanId = Buffer.from(recipientId.slice(2), "hex");
     } else {
       cleanId = recipientId.slice(1);
     }
+    if (options?.senderSignature) return this.dhiesV3SignedEncrypt(message, recipientId, cleanId);
     return this.keyManager.dhiesEncrypt(message, cleanId);
+  }
+
+  /** Whether this identity signs with ML-DSA (Dilithium or Hybrid key manager). */
+  private signsWithMlDsa() {
+    return this.keyManager instanceof DilithiumManager || this.keyManager instanceof HybridManager;
+  }
+
+  private async dhiesV3SignedEncrypt(message: string | Buffer, recipientId: Buffer | string, cleanId: Buffer): Promise<Buffer | null> {
+    try {
+      // post-quantum sender authentication needs an ML-DSA signer and a PQ recipient
+      if (!this.signsWithMlDsa()) return null;
+      const recipientFullId = toBuffer(recipientId);
+      if (!VaultysId.fromId(recipientFullId).isPostQuantum()) return null;
+      const sign = (tbs: Buffer) => this.signInDomain(DHIES_V3S_INCIPIT, tbs);
+      return await (this.keyManager as CypherManager).dhiesV3SignedEncrypt(message, cleanId, this.id, recipientFullId, sign);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -520,14 +627,52 @@ export default class VaultysId {
    * @param encryptedMessage Encrypted message from dhiesEncrypt
    * @returns Decrypted message as Buffer or null if decryption fails
    */
-  async dhiesDecrypt(encryptedMessage: Buffer, senderId: Buffer | string): Promise<Buffer | null> {
+  async dhiesDecrypt(encryptedMessage: Buffer, senderId: Buffer | string, options?: DhiesDecryptOptions): Promise<Buffer | null> {
     let cleanId: Buffer;
     if (typeof senderId === "string") {
       cleanId = Buffer.from(senderId.slice(2), "hex");
     } else {
       cleanId = senderId.slice(1);
     }
+    const mode = options?.senderSignature;
+    if (mode === "accept" || mode === "require") {
+      const signed = encryptedMessage?.[0] === DHIES_V3_SIGNED_TAG;
+      if (signed) return this.dhiesV3SignedDecrypt(encryptedMessage, senderId, cleanId);
+      if (mode === "require") return null;
+    }
     return this.keyManager.dhiesDecrypt(encryptedMessage, cleanId);
+  }
+
+  /**
+   * Opens a DHIES message written by @vaultys/id 3.x (`dhiesEncrypt` before 4.0). That format does not authenticate
+   * the sender: anyone can produce a message under any sender id, hence `senderVerified: false`. Decrypt-only: 4.0
+   * never writes it. Returns null when the message does not open.
+   */
+  async dhiesDecryptLegacyV1(encryptedMessage: Buffer | Uint8Array, claimedSenderId: Buffer | string): Promise<{ plaintext: Buffer; senderVerified: false } | null> {
+    try {
+      const secretKey = (this.keyManager as CypherManager).cypher?.secretKey;
+      if (!secretKey) return null;
+      const cleanId = typeof claimedSenderId === "string" ? Buffer.from(claimedSenderId.slice(2), "hex") : Buffer.from(claimedSenderId).slice(1);
+      const senderPublicKey = getCypherPublicKeyFromId(cleanId);
+      if (!senderPublicKey) return null;
+      const plaintext = dhiesV1LegacyDecrypt(encryptedMessage, secretKey, this.keyManager.cypher.publicKey, senderPublicKey);
+      return plaintext ? { plaintext, senderVerified: false } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async dhiesV3SignedDecrypt(encryptedMessage: Buffer, senderId: Buffer | string, cleanId: Buffer): Promise<Buffer | null> {
+    try {
+      if (!this.isPostQuantum()) return null;
+      const senderFullId = toBuffer(senderId);
+      const sender = VaultysId.fromId(senderFullId);
+      if (!sender.signsWithMlDsa()) return null;
+      const verify = (tbs: Buffer, signature: Buffer) => sender.verifyInDomain(DHIES_V3S_INCIPIT, tbs, signature, false);
+      return await (this.keyManager as CypherManager).dhiesV3SignedDecrypt(encryptedMessage, cleanId, senderFullId, this.id, verify);
+    } catch {
+      return null;
+    }
   }
 
   private async signInDomain(domain: Buffer, data: Buffer | Uint8Array | string): Promise<Buffer> {

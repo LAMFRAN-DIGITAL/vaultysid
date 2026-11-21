@@ -8,10 +8,19 @@ import VaultysId from "./VaultysId";
 import { hash, randomBytes, secureErase } from "./crypto";
 import { decode, encode } from "@msgpack/msgpack";
 import { Buffer } from "buffer/";
-import nacl from "tweetnacl";
+import { SECRETBOX_NONCE_LENGTH, secretboxOpen, secretboxSeal } from "./nacl";
 import { VaultysBackup } from "./platform/abstract";
 import { platformCrypto } from "./platform";
 import DeprecatedKeyManager from "./KeyManager/DeprecatedKeyManager";
+import PassportAAManager, { TYPE_PASSPORT_AA } from "./KeyManager/PassportAAManager";
+import { LEGACY_RECORD_KEY, LEGACY_REOPEN_DEFAULT, certificateHash, decodeV0Certificate, involves, isLegacyV3Store, legacyEntropy, recoverLegacyIdentity, storedCertificates, verifyV0CertificateSignatures } from "./legacyV3";
+import type { LegacyIdentityHint, LegacyMigrationRecord } from "./legacyV3";
+
+/**
+ * Storage key for "wot" and "signatures": `<timestamp>-<hex SHA-256(data)>`. The timestamp alone made two entries
+ * of the same millisecond overwrite each other; keys still sort by date and stay opaque strings.
+ */
+export const timestampedKey = (data: Buffer | Uint8Array, now: number = Date.now()) => `${now}-${hash("sha256", Buffer.from(data)).toString("hex")}`;
 
 // "vaultys/encryption/" + version = 0x01
 const ENCRYPTION_HEADER = Buffer.from("7661756c7479732f656e6372797074696f6e2f01", "hex");
@@ -52,7 +61,9 @@ export type File = {
 
 export const instanciateContact = (c: StoredContact) => {
   let vaultysId: VaultysId;
-  if (c.type === 3) {
+  if (c.type === TYPE_PASSPORT_AA) {
+    vaultysId = new VaultysId(PassportAAManager.instantiate(c.keyManager as PassportAAManager), c.certificate, c.type);
+  } else if (c.type === 3) {
     vaultysId = new VaultysId(Fido2Manager.instantiate(c.keyManager), c.certificate, c.type);
   } else if (c.type === 4) {
     vaultysId = new VaultysId(Fido2PRFManager.instantiate(c.keyManager), c.certificate, c.type);
@@ -114,8 +125,14 @@ export default class IdManager {
     // machine...), the algorithm (ed25519, dilithium, hybrid...) and the id
     // version, so restoring it yields exactly the same identity and DID.
     this.store.set("secret", this.vaultysId.getSecret());
-    if (this.store.get("entropy") !== undefined) this.store.delete("entropy");
+    // a 3.x store migrated on a guessed type/algorithm keeps its entropy until confirmLegacyIdentity()
+    if (this.store.get("entropy") !== undefined && !this.legacyRecord()?.guessed) this.store.delete("entropy");
     this.store.save();
+  }
+
+  private legacyRecord() {
+    const record = this.store.get(LEGACY_RECORD_KEY) as LegacyMigrationRecord | undefined;
+    return record && typeof record === "object" ? record : undefined;
   }
 
   /**
@@ -148,9 +165,11 @@ export default class IdManager {
    * Imports a backup file
    * @param backupData The backup file data as Uint8Array
    * @param passphrase Optional passphrase for decryption (only needed for encrypted backups)
+   * @param legacy how a 3.x backup (entropy only) is migrated. By default as `open` does; `true` only if its
+   * certificates tell the identity type/algorithm, or the type/algorithm it was created with; `false` refuses it
    * @returns Promise resolving to import result or null if import failed
    */
-  static async importBackup(backupData: Uint8Array, passphrase?: string): Promise<IdManager | null> {
+  static async importBackup(backupData: Uint8Array, passphrase?: string, legacy?: boolean | LegacyIdentityHint): Promise<IdManager | null> {
     try {
       // Decode the backup data
       const backup = decode(backupData) as VaultysBackup;
@@ -185,6 +204,8 @@ export default class IdManager {
         () => {},
         () => {},
       );
+      if (legacy === undefined) return await IdManager.open(store);
+      if (legacy && isLegacyV3Store(store)) return await IdManager.fromLegacyStore(store, typeof legacy === "object" ? legacy : undefined);
       return await IdManager.fromStore(store);
     } catch (error) {
       console.error("Import error:", error);
@@ -195,8 +216,8 @@ export default class IdManager {
   /**
    * Restore an IdManager from a store. The identity is restored exactly from
    * the persisted secret (same type, algorithm and DID). A legacy store holding
-   * only `entropy` is rejected: its type/algorithm can't be recovered, rebuild
-   * it explicitly with `new IdManager(await VaultysId.fromEntropy(entropy, type, alg), store)`.
+   * only `entropy` (written by 3.x) is rejected here: migrate it with
+   * `IdManager.fromLegacyStore(store)`.
    * An empty store creates a new machine identity.
    */
   static async fromStore(store: Store) {
@@ -206,10 +227,119 @@ export default class IdManager {
       return new IdManager(vaultysId, store);
     }
     if (store.get("entropy")) {
-      throw new Error("Legacy store without secret: the identity type and algorithm can't be recovered from entropy alone. Restore it explicitly with VaultysId.fromEntropy(entropy, type, alg).");
+      throw new Error("Legacy (3.x) store without secret: migrate it with IdManager.fromLegacyStore(store).");
     }
     const vaultysId = await VaultysId.generateMachine();
     return new IdManager(vaultysId, store);
+  }
+
+  /**
+   * Opens a store written by @vaultys/id 3.x, which keeps only `entropy`, and migrates it in place: the same identity
+   * (same DID) is restored and the store rewritten with its secret, as 4.0 stores are.
+   *
+   * The identity type and algorithm are recovered from the store's own certificates; a store without any needs
+   * `hint`. The 3.x (version 0) certificates found in the store that involve this identity and verify are recorded
+   * (`store.legacy`): `verifyRelationshipCertificate` and `verifyWebOfTrust` keep accepting exactly those, never a
+   * v0 certificate obtained later. Contacts still on a v0 certificate are listed by `legacyContacts()`; a new
+   * handshake with them replaces it. A store that already has a secret is opened as `fromStore` does.
+   */
+  static async fromLegacyStore(store: Store, hint?: LegacyIdentityHint) {
+    return IdManager.migrateLegacyStore(store, hint);
+  }
+
+  /**
+   * Opens any store, with nothing to ask the user: a 4.0 store as `fromStore` does, a 3.x store migrated in place as
+   * `fromLegacyStore` does, an empty store with a new machine identity. Calling it again on the same store opens it
+   * as it was left (the migration happens once).
+   *
+   * A 3.x store with no certificate gives nothing to check the identity type and algorithm against: it is opened
+   * with `legacyFallback`, by default what 3.x itself reopened such a store as (a machine ed25519 identity, see
+   * `LEGACY_REOPEN_DEFAULT`); an app that knows what it created passes that instead. Such a store keeps its `entropy`
+   * and `isLegacyIdentityGuessed()` stays true until `confirmLegacyIdentity()`; `fromLegacyStore(store, hint)` can
+   * still correct it.
+   */
+  static async open(store: Store, options: { legacyFallback?: LegacyIdentityHint } = {}) {
+    if (isLegacyV3Store(store)) return IdManager.migrateLegacyStore(store, undefined, options.legacyFallback ?? LEGACY_REOPEN_DEFAULT);
+    return IdManager.fromStore(store);
+  }
+
+  private static async migrateLegacyStore(store: Store, hint?: LegacyIdentityHint, fallback?: LegacyIdentityHint) {
+    if (store.get("secret")) {
+      // a store migrated on a guessed type/algorithm can be migrated again, with the right one
+      const record = store.get(LEGACY_RECORD_KEY) as LegacyMigrationRecord | undefined;
+      if (!(hint && record?.guessed && legacyEntropy(store))) return IdManager.fromStore(store);
+    }
+    const { vaultysId, guessed } = await recoverLegacyIdentity(store, hint, fallback);
+    const trusted = storedCertificates(store)
+      .filter((c) => involves(vaultysId, c) && verifyV0CertificateSignatures(c))
+      .map(certificateHash);
+    const record: LegacyMigrationRecord = { from: "3.x", migratedAt: Date.now(), certificates: Object.fromEntries(trusted.map((h) => [h, true as const])) };
+    if (guessed) record.guessed = true;
+    // the record and the secret are written before the entropy is removed (by the constructor)
+    store.set(LEGACY_RECORD_KEY, record);
+    return new IdManager(vaultysId, store);
+  }
+
+  /** True for a 3.x store migrated without any certificate to check its identity type and algorithm against. */
+  isLegacyIdentityGuessed() {
+    return !!this.legacyRecord()?.guessed;
+  }
+
+  /** Confirms the identity of a store migrated on a guessed type/algorithm: its 3.x entropy is then removed. */
+  confirmLegacyIdentity() {
+    const record = this.legacyRecord();
+    if (!record?.guessed) return;
+    delete record.guessed;
+    this.store.set(LEGACY_RECORD_KEY, record);
+    if (this.store.get("entropy") !== undefined) this.store.delete("entropy");
+    this.store.save();
+  }
+
+  /** A v0 certificate recorded when this store was migrated from 3.x, involving this identity, that still verifies. */
+  private isMigratedLegacyCertificate(certificate: Buffer | Uint8Array) {
+    const record = this.store.get(LEGACY_RECORD_KEY) as LegacyMigrationRecord | undefined;
+    if (!record || typeof record.certificates !== "object" || record.certificates === null) return false;
+    const cert = Buffer.from(certificate);
+    return record.certificates[certificateHash(cert)] === true && involves(this.vaultysId, cert) && verifyV0CertificateSignatures(cert);
+  }
+
+  private async verifyStoredCertificate(certificate: Buffer | Uint8Array) {
+    return (await Challenger.verifyCertificate(Buffer.from(certificate))) || this.isMigratedLegacyCertificate(certificate);
+  }
+
+  /**
+   * DIDs of the contacts still on a 3.x (version 0) certificate. A new handshake with the same contact
+   * (`askContact`/`acceptContact`), once both sides run 4.0, replaces it.
+   */
+  legacyContacts(): string[] {
+    return this.legacyEntries("contacts");
+  }
+
+  /** DIDs of the registered apps still on a 3.x (version 0) certificate; a new registration replaces it. */
+  legacyApps(): string[] {
+    return this.legacyEntries("registrations");
+  }
+
+  private legacyEntries(table: "contacts" | "registrations") {
+    const entries = this.store.substore(table);
+    return entries.list().filter((did) => {
+      const cert = entries.get(did)?.certificate;
+      return !!cert && decodeV0Certificate(Buffer.from(cert)) !== null;
+    });
+  }
+
+  /**
+   * Replaces the 3.x certificate of a stored contact or app by the one a new handshake with the SAME identity just
+   * produced: entries are keyed by DID, so the peer is the one already stored. Only the certificate changes (the
+   * metadata set on the contact are kept); a 4.0 certificate is never replaced.
+   */
+  private upgradeLegacyEntry(table: "contacts" | "registrations", did: string, certificate: Buffer | undefined) {
+    const entries = this.store.substore(table);
+    const stored = entries.get(did);
+    if (!stored?.certificate || !certificate || decodeV0Certificate(Buffer.from(stored.certificate)) === null) return;
+    if (decodeV0Certificate(Buffer.from(certificate)) !== null) return;
+    entries.set(did, { ...stored, certificate });
+    this.store.save();
   }
 
   merge(otherStore: Store, master = true) {
@@ -249,7 +379,7 @@ export default class IdManager {
     let verified = true;
     for (const certid of this.store.substore("wot").list()) {
       const cert = this.store.substore("wot").get(certid);
-      verified = verified && (await Challenger.verifyCertificate(Buffer.from(cert)));
+      verified = verified && (await this.verifyStoredCertificate(cert));
       //if (!verified) console.log(Challenger.deserializeCertificate(cert));
     }
     //console.log("wot", verified);
@@ -259,11 +389,11 @@ export default class IdManager {
     }
     //console.log("registrations", verified);
     for (const contact of this.contacts) {
-      verified = verified && (await Challenger.verifyCertificate(Buffer.from(contact!.certificate!)));
+      verified = verified && (await this.verifyStoredCertificate(contact!.certificate!));
     }
     //console.log("contacts", verified);
     for (const app of this.apps) {
-      verified = verified && (await Challenger.verifyCertificate(Buffer.from(app!.certificate!)));
+      verified = verified && (await this.verifyStoredCertificate(app!.certificate!));
     }
     //console.log("apps", verified);
 
@@ -360,7 +490,7 @@ export default class IdManager {
 
   async verifyRelationshipCertificate(did: string) {
     const c = this.store.substore("contacts").get(did) || this.store.substore("registrations").get(did);
-    return Challenger.verifyCertificate(c.certificate);
+    return this.verifyStoredCertificate(c.certificate);
   }
 
   set name(n) {
@@ -411,7 +541,7 @@ export default class IdManager {
 
   async signChallenge(challenge: Buffer) {
     const signature = await this.vaultysId.signChallenge(challenge);
-    this.store.substore("signatures").set("" + Date.now(), {
+    this.store.substore("signatures").set(timestampedKey(signature), {
       signature,
       challenge,
     });
@@ -426,7 +556,7 @@ export default class IdManager {
       challenge,
       signature: await this.vaultysId.signChallenge(challenge),
     };
-    this.store.substore("signatures").set(Date.now() + "", payload);
+    this.store.substore("signatures").set(timestampedKey(payload.signature ?? challenge), payload);
     this.store.save();
     return payload;
   }
@@ -456,8 +586,8 @@ export default class IdManager {
       throw new Error("Invalid header for encrypted file");
     }
     const prfNonceBytes = data.slice(ENCRYPTION_HEADER.length, ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH);
-    const nonceBytes = data.slice(ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH, ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH + nacl.secretbox.nonceLength);
-    const ciphertext = data.slice(ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH + nacl.secretbox.nonceLength);
+    const nonceBytes = data.slice(ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH, ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH + SECRETBOX_NONCE_LENGTH);
+    const ciphertext = data.slice(ENCRYPTION_HEADER.length + PRF_NONCE_LENGTH + SECRETBOX_NONCE_LENGTH);
 
     const prf = channel ? await this.requestPRF(channel, "encryption/" + Buffer.from(prfNonceBytes).toString("hex") + "/encryption") : await this.vaultysId.hmac("prf|encryption/" + Buffer.from(prfNonceBytes).toString("hex") + "/encryption|prf");
     if (prf?.length !== PRF_NONCE_LENGTH) {
@@ -468,8 +598,8 @@ export default class IdManager {
     const secretKey = hash("sha256", prf);
     secureErase(prf);
 
-    // Decrypt using nacl.secretbox.open
-    const decrypted = nacl.secretbox.open(ciphertext, nonceBytes, secretKey);
+    // Decrypt (XSalsa20-Poly1305 secretbox)
+    const decrypted = secretboxOpen(ciphertext, nonceBytes, secretKey);
     secureErase(secretKey);
 
     if (!decrypted) {
@@ -497,10 +627,10 @@ export default class IdManager {
     secureErase(prf);
 
     // Generate a random nonce for secretbox encryption
-    const nonceBytes = nacl.randomBytes(nacl.secretbox.nonceLength);
+    const nonceBytes = randomBytes(SECRETBOX_NONCE_LENGTH);
 
-    // Encrypt using nacl.secretbox
-    const ciphertext = nacl.secretbox(new Uint8Array(toEncrypt.arrayBuffer), nonceBytes, secretKey);
+    // Encrypt (XSalsa20-Poly1305 secretbox)
+    const ciphertext = secretboxSeal(new Uint8Array(toEncrypt.arrayBuffer), nonceBytes, secretKey);
     secureErase(secretKey);
 
     // Combine encryption nonce and ciphertext into a single buffer
@@ -814,7 +944,7 @@ export default class IdManager {
       }
       // there is a caveat here, we are not sure that the last bit of information has been received
       channel.send(certificate);
-      this.store.substore("wot").set(Date.now() + "", certificate);
+      this.store.substore("wot").set(timestampedKey(certificate), certificate);
       // TODO create/update merkle tree + sign it
       return challenger;
     } else {
@@ -873,7 +1003,7 @@ export default class IdManager {
     }
     if (challenger.isComplete()) {
       const certificate = challenger.getCertificate();
-      this.store.substore("wot").set(Date.now() + "", certificate);
+      this.store.substore("wot").set(timestampedKey(certificate), certificate);
       // TODO create/update merkle tree + sign it
       return challenger;
     } else {
@@ -888,7 +1018,8 @@ export default class IdManager {
       this.saveContact(app);
     } else {
       const appstore = this.store.substore("registrations");
-      if (!appstore.get(app.did)) {
+      if (appstore.get(app.did)) this.upgradeLegacyEntry("registrations", app.did, app.certificate);
+      else {
         appstore.set(app.did, {
           site: name ?? app.did,
           serverId: app.id.toString("base64"),
@@ -904,8 +1035,10 @@ export default class IdManager {
       this.saveApp(contact);
     } else {
       const contactstore = this.store.substore("contacts");
-      if (!contactstore.get(contact.did)) {
-        contactstore.set(contact.did, contact as StoredContact);
+      if (contactstore.get(contact.did)) this.upgradeLegacyEntry("contacts", contact.did, contact.certificate);
+      else {
+        const publicContact = contact.type === TYPE_PASSPORT_AA ? VaultysId.fromId(contact.id, contact.certificate) : contact;
+        contactstore.set(contact.did, publicContact as StoredContact);
         this.store.save();
       }
     }

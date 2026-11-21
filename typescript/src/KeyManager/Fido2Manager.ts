@@ -1,6 +1,6 @@
 import { hash, randomBytes } from "../crypto";
 import cbor from "cbor";
-import nacl from "tweetnacl";
+import { boxKeyPairFromSecretKey } from "../nacl";
 import { getWebAuthnProvider, WebAuthnProvider } from "../platform/webauthn";
 import { KeyPair } from ".";
 import { decode, encode } from "@msgpack/msgpack";
@@ -119,7 +119,7 @@ export default class Fido2Manager extends CypherManager {
     //encrypting
     const entropy = randomBytes(32);
     const seed = sha512(entropy);
-    const cypher = nacl.box.keyPair.fromSecretKey(seed.slice(0, 32));
+    const cypher = boxKeyPairFromSecretKey(seed.slice(0, 32));
     f2m.cypher = {
       publicKey: Buffer.from(cypher.publicKey),
       secretKey: Buffer.from(cypher.secretKey),
@@ -164,7 +164,7 @@ export default class Fido2Manager extends CypherManager {
     f2m.ckey = requireBytes(data.c, "FIDO2 COSE key");
     f2m.authType = getAuthTypeFromCkey(f2m.ckey);
     f2m.signer = getSignerFromCkey(f2m.ckey);
-    const cypher = nacl.box.keyPair.fromSecretKey(requireBytes(data.e, "X25519 secret key", 32));
+    const cypher = boxKeyPairFromSecretKey(requireBytes(data.e, "X25519 secret key", 32));
     f2m.cypher = {
       publicKey: Buffer.from(cypher.publicKey),
       secretKey: Buffer.from(cypher.secretKey),

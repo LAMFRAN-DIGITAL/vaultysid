@@ -62,6 +62,8 @@ The challenge progresses through the following states:
 
 Only `version = 1` challenges are valid. Implementations MUST reject any other version; the legacy version 0 encoding has been removed because it did not sign metadata and allowed downgrades.
 
+Migrating a wallet written by 3.x is the one exception, and it never applies to a received certificate: when an implementation migrates such a store, it MAY record the version 0 certificates the store already holds, involving the store's own identity and whose signatures verify under the 3.x rules, and keep treating exactly those as valid relationship certificates. A version 0 handshake signature is `sign(SHA-256("VAULTYS_SIGN" || v0 encoding))`, the domain of `signChallenge`, so a version 0 certificate obtained after the migration MUST NOT be accepted.
+
 ### 3.3. State Transitions
 
 Implementations MUST enforce exactly the following transitions. Any other combination of local state and received message MUST move the session to `ERROR`.
@@ -199,6 +201,37 @@ interface StreamChannel {
   downloadData(): Promise<Buffer>;
 }
 ```
+
+### 7.4. Channel Connection Strings
+
+A channel is usually opened by one party (the *initiator*, e.g. a website) and joined by the other (the *receiver*,
+e.g. a mobile application scanning a QR code). The initiator publishes a **connection string**; the receiver builds its
+channel from it with `fromConnectionString`. Everything the receiver needs to reach the initiator MUST be in the
+connection string, so that both parties use the same infrastructure.
+
+PeerJS channel (`@vaultys/channel-peerjs`):
+
+```
+vaultys://peerjs?key=<64 hex>&host=<signalling host>[&port=<1-65535>][&path=</path>][&secure=0][&ice=<base64url(JSON)>]
+```
+
+| Parameter | Meaning |
+|---|---|
+| `key` | 32-byte shared secret (hex). It derives both peer identifiers and encrypts the channel (`CryptoChannel`). |
+| `host`, `port`, `path`, `secure` | PeerJS signalling server. `secure=0` disables TLS (development only). |
+| `ice` | base64url of a JSON array of ICE servers (`[{ "urls": "stun:…" }, { "urls": "turns:…", "username": "…", "credential": "…" }]`), at most 4, `stun:`, `stuns:`, `turn:`, `turns:` URLs only. Absent: the WebRTC library defaults (public STUN/TURN servers). `[]`: no STUN/TURN at all. |
+
+Receivers that do not know a parameter ignore it and keep their previous behaviour.
+
+Security and privacy considerations:
+
+- A connection string read from a QR code is untrusted input. A receiver MUST validate every parameter and MUST
+  refuse the whole string when one is invalid; it MUST NOT fall back silently to other servers.
+- The signalling server and the STUN/TURN servers learn the IP address of each peer, and TURN servers relay the
+  (encrypted) traffic. Default public servers are third parties: an initiator that cares about privacy SHOULD give its
+  own `host` and `ice`.
+- The channel key is a bearer secret: whoever reads the QR code can join the channel. The handshake (section 4) still
+  authenticates both identities; the channel encryption only protects the transport.
 
 ## 8. Web of Trust Operations
 

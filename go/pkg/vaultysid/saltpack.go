@@ -1,3 +1,11 @@
+//go:build !vaultysid_nosaltpack
+
+// Saltpack is left out with `-tags vaultysid_nosaltpack`: github.com/keybase/saltpack
+// depends on github.com/keybase/go-codec, which imports net/rpc and therefore
+// net/http. A binary that only needs identities, service identities and the
+// secure channel (for example a gomobile library) can then be built without any
+// network package. Without the tag, nothing changes.
+
 package vaultysid
 
 import (
