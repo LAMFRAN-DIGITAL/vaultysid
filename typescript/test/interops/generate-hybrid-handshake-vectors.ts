@@ -111,7 +111,7 @@ export async function generateHybridHandshakeVectors() {
     challenge.sign1 = await signHandshakeDeterministic(initiator, unsigned);
 
     const serializer = new Challenger(initiator);
-    serializer.challenge = { ...challenge, sign1: undefined, sign2: undefined, state: 0, pk2: undefined, nonce: challenge.nonce!.subarray(0, 16), metadata: { pk1: metadata.pk1 } };
+    serializer.challenge = { ...challenge, sign1: undefined, sign2: undefined, state: 0, pk2: undefined, nonce: Buffer.from(challenge.nonce!.subarray(0, 16)), metadata: { pk1: metadata.pk1 } };
     const init = serializer.getCertificate();
     serializer.challenge = { ...challenge, sign1: undefined, state: 1 };
     const step1 = serializer.getCertificate();
@@ -149,8 +149,8 @@ export async function generateHybridHandshakeVectors() {
       ["sign1_ed25519_half_altered", { sign1: flip(challenge.sign1, 10) }],
       ["sign1_mldsa_half_altered", { sign1: flip(challenge.sign1, 64 + 100) }],
       ["sign2_mldsa_half_altered", { sign2: flip(challenge.sign2, challenge.sign2.length - 5) }],
-      ["sign1_ed25519_only", { sign1: challenge.sign1.subarray(0, 64) }],
-      ["sign2_mldsa_only", { sign2: challenge.sign2.subarray(64) }],
+      ["sign1_ed25519_only", { sign1: Buffer.from(challenge.sign1.subarray(0, 64)) }],
+      ["sign2_mldsa_only", { sign2: Buffer.from(challenge.sign2.subarray(64)) }],
       ["service_metadata_changed", { metadata: { pk1: { ...metadata.pk1, "vaultys.service": "https://other.test" }, pk2: metadata.pk2 } }],
     ];
     for (const [suffix, change] of tampered) {

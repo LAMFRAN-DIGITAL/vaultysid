@@ -52,7 +52,7 @@ function replay(file: string, producer: string) {
       it(`verifies ${h.name}`, async () => {
         const complete = unhex(h.complete);
         const parsed = Challenger.deserializeCertificate(complete);
-        assert.strictEqual(parsed.state, 2, parsed.error);
+        assert.strictEqual(parsed.state, 2, String(parsed.error));
         assert.ok(await Challenger.verifyCertificate(complete));
         assert.strictEqual(Buffer.from(parsed.pk1!).toString("hex"), vectors.identities[h.initiator].id);
         assert.strictEqual(Buffer.from(parsed.pk2!).toString("hex"), vectors.identities[h.responder].id);
@@ -68,7 +68,7 @@ function replay(file: string, producer: string) {
         assert.ok(initiator.verifyHandshake(unsigned, parsed.sign1!));
         // only in the handshake domain
         assert.ok(!initiator.verify(unsigned, parsed.sign1!));
-        assert.ok(!initiator.verifyChallenge(unsigned, parsed.sign1!));
+        assert.ok(!initiator.verifyChallenge(unsigned, parsed.sign1!, false));
         assert.strictEqual(Challenger.deserializeCertificate(unhex(h.init)).state, 0);
         assert.strictEqual(Challenger.deserializeCertificate(unhex(h.step1)).state, 1);
       });
