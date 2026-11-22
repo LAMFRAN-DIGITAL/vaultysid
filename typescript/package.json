@@ -45,7 +45,8 @@
     "test:channel:vectors": "tsx test/interops/generate-xwing-channel-vectors.ts",
     "test:anchor:vectors": "tsx test/interops/generate-service-anchor-vectors.ts",
     "test:pq:vectors": "tsx test/interops/generate-pq-identity-vectors.ts",
-    "test:legacy:vectors": "tsx test/interops/generate-legacy-v3-vectors.ts"
+    "test:legacy:vectors": "tsx test/interops/generate-legacy-v3-vectors.ts",
+    "test:hybrid:vectors": "tsx test/interops/generate-hybrid-handshake-vectors.ts"
   },
   "keywords": [],
   "author": "",
