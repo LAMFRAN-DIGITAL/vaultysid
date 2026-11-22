@@ -76,6 +76,7 @@ The handshake runs inside the channel with `protocol = "p2p"` and `service = "au
 - **Both** sides put both keys in their own metadata (`pk1` for the initiator, `pk2` for the responder). Caller metadata MUST NOT use these keys (`INVALID_ARGUMENT`).
 - The responder checks, on INIT and **before signing STEP1**, that `pk1` carries its own `binding` (`BINDING_MISMATCH`) and its expected service id (`SERVICE_MISMATCH`).
 - The initiator checks, on STEP1 and **before signing COMPLETE**, that `pk2` carries its `binding` and its service id. If the caller gave an **expected peer** (an identity the service publishes, or the one pinned at the first connection), the initiator also checks that the identity which signed STEP1 has the same fingerprint, `SHA-256` of its version-1 serialized id (`PEER_MISMATCH`).
+- **Post-quantum peer required** (option `requirePostQuantumPeer` in TypeScript, `RequirePostQuantumPeer` in Go; default off). When set, a side refuses a peer whose identity does not sign with ML-DSA, that is whose key manager is neither Dilithium (ML-DSA-87) nor hybrid (Ed25519 + ML-DSA-87): Ed25519, FIDO2 and passport identities are refused (`PEER_NOT_PQ`). The responder checks `pk1` of INIT **before signing STEP1**; the initiator checks `pk2` of STEP1 (the identity whose `sign2` was just verified) **before signing COMPLETE**. A classical peer therefore never obtains a signature from a side that set the option. INIT carries no signature: an initiator that claims a post-quantum `pk1` still has to sign COMPLETE with it, and the responder verifies that signature against the same `pk1`. `isPostQuantumPeer(identity)` (TypeScript) / `IsPostQuantumPeer(identity)` (Go) give the same test on an identity. The option is checked after the binding and service checks.
 - On any failure the side sends a single `0` byte, closes the channel and stores nothing. The contact and certificate are stored only after COMPLETE.
 - The service id MUST already be canonical; implementations MUST refuse, not normalize, another spelling (`INVALID_SERVICE_ID`).
 - Certificates are stored in `wot` under `<timestamp>-<hex SHA-256(certificate)>`, so two handshakes completed in the same millisecond do not overwrite each other.
@@ -86,7 +87,7 @@ What this gives: a handshake made in one channel cannot be replayed or relayed i
 
 - **Harvest now, decrypt later.** Session keys depend on X-Wing, which stays secure while either ML-KEM-768 or X25519 does.
 - **Forward secrecy.** The key pair of M1 is ephemeral and erased after decapsulation; identity keys are never used for encryption, so their later compromise does not reveal past sessions.
-- **Authentication is classical or post-quantum depending on the identities.** The handshake signatures are those of the identities (Ed25519, ML-DSA-87 or hybrid).
+- **Authentication is classical or post-quantum depending on the identities.** The handshake signatures are those of the identities (Ed25519, ML-DSA-87 or hybrid). A side that needs post-quantum authentication of its peer sets the post-quantum peer option (§4); without it, a peer with an Ed25519 identity is accepted.
 - **No identity hiding against an active attacker.** The initiator's identity is revealed to whoever answers M1.
 
 ## 6. Test vectors

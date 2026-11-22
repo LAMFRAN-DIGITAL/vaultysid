@@ -4,8 +4,10 @@ import { Buffer } from "buffer/";
 import { IdManager, MemoryChannel, MemoryStorage, VaultysId } from "..";
 import "./shims";
 import { checkAnchorPin, createServiceAnchor, serviceAnchorUrl, verifyServiceAnchor } from "../src/serviceAnchor";
+import { deriveServiceIdentity } from "../src/serviceIdentity";
 import { acceptOverXWing, connectOverXWing, isChannelError } from "../src/xwingChannel";
 import { buildVectors, VECTORS_PATH } from "./interops/generate-service-anchor-vectors";
+import { testMaster } from "./interops/generate-service-identity-vectors";
 
 // rfc/SERVICE-IDENTITIES.md §8
 
@@ -63,6 +65,23 @@ describe("Service anchors", () => {
     assert.ok(results[0].status === "rejected" && isChannelError(results[0].reason, "PEER_MISMATCH"));
   });
 
+  it("hybrid service: derived identity, anchor, expected peer and post-quantum peer required", async () => {
+    const master = Uint8Array.from(Buffer.alloc(32, 7));
+    const service = new IdManager(
+      await deriveServiceIdentity(master, SERVICE, { alg: "dilithium_ed25519", role: "organization" }),
+      MemoryStorage(() => ""),
+    );
+    const user = new IdManager(
+      await VaultysId.generatePerson("dilithium_ed25519"),
+      MemoryStorage(() => ""),
+    );
+    const expected = verifyServiceAnchor(await createServiceAnchor(service.vaultysId, SERVICE), SERVICE)!;
+    const a = MemoryChannel.createBidirectionnal();
+    const [left, right] = await Promise.all([connectOverXWing(user, a, SERVICE, {}, { expectedPeer: expected, requirePostQuantumPeer: true }), acceptOverXWing(service, a.otherend!, SERVICE, {}, { requirePostQuantumPeer: true })]);
+    assert.strictEqual(left.contact.did, service.vaultysId.did);
+    assert.strictEqual(right.contact.did, user.vaultysId.did);
+  });
+
   describe("test vectors", () => {
     const vectors = JSON.parse(readFileSync(VECTORS_PATH, "utf8"));
     it("accepts the valid anchors", () => {
@@ -70,6 +89,18 @@ describe("Service anchors", () => {
     });
     it("refuses the invalid anchors", () => {
       for (const v of vectors.invalid) assert.strictEqual(verifyServiceAnchor(Buffer.from(v.anchor, "hex"), v.serviceId), null, v.name);
+    });
+    it("accepts the hybrid anchors, made by the derived hybrid identities", async () => {
+      const master = testMaster(vectors.masterName);
+      for (const v of vectors.hybrid.valid) {
+        assert.strictEqual(verifyServiceAnchor(Buffer.from(v.anchor, "hex"), v.serviceId)?.did, v.did, v.serviceId);
+        const derived = await deriveServiceIdentity(master, v.serviceId, { alg: vectors.hybrid.alg, role: vectors.hybrid.role, postQuantum: v.postQuantum });
+        assert.strictEqual(derived.did, v.did);
+        assert.strictEqual(derived.type, v.type);
+      }
+    });
+    it("refuses the invalid hybrid anchors", () => {
+      for (const v of vectors.hybrid.invalid) assert.strictEqual(verifyServiceAnchor(Buffer.from(v.anchor, "hex"), v.serviceId), null, v.name);
     });
     it("are reproducible", async () => {
       assert.deepStrictEqual(JSON.parse(JSON.stringify(await buildVectors())), vectors);

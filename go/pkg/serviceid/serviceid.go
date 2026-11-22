@@ -297,9 +297,6 @@ func Derive(master []byte, serviceID string, opts Options) (*vaultysid.VaultysID
 	if err != nil {
 		return nil, err
 	}
-	if opts.PostQuantum {
-		return nil, errors.New("post-quantum identity types are not implemented in Go on this branch")
-	}
 	entropy, err := DeriveEntropy(master, serviceID, opts)
 	if err != nil {
 		return nil, err

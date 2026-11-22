@@ -19,6 +19,8 @@ import Challenger, { CHALLENGE_STATE } from "./Challenger";
 import { timestampedKey } from "./IdManager";
 import type IdManager from "./IdManager";
 import type { Channel } from "./MemoryChannel";
+import DilithiumManager from "./KeyManager/DilithiumManager";
+import HybridManager from "./KeyManager/HybridManager";
 import VaultysId from "./VaultysId";
 import { randomBytes } from "./crypto";
 import { isCanonicalServiceId, type ServiceIdOptions } from "./serviceIdentity";
@@ -49,7 +51,7 @@ const MAX_SEQ = Number.MAX_SAFE_INTEGER;
 const PROTOCOL = "p2p";
 const SERVICE = "auth";
 
-export type ChannelErrorCode = "INVALID_ARGUMENT" | "INVALID_FORMAT" | "INVALID_KEY" | "INVALID_SEQUENCE" | "INVALID_SERVICE_ID" | "AUTH_FAILED" | "CHANNEL_CLOSED" | "TIMEOUT" | "BINDING_MISMATCH" | "SERVICE_MISMATCH" | "PEER_MISMATCH" | "HANDSHAKE_FAILED";
+export type ChannelErrorCode = "INVALID_ARGUMENT" | "INVALID_FORMAT" | "INVALID_KEY" | "INVALID_SEQUENCE" | "INVALID_SERVICE_ID" | "AUTH_FAILED" | "CHANNEL_CLOSED" | "TIMEOUT" | "BINDING_MISMATCH" | "SERVICE_MISMATCH" | "PEER_MISMATCH" | "PEER_NOT_PQ" | "HANDSHAKE_FAILED";
 
 export class ChannelError extends Error {
   readonly code: ChannelErrorCode;
@@ -404,7 +406,34 @@ export function identityFingerprint(identity: VaultysId): Uint8Array {
  */
 export const certificateKey = timestampedKey;
 
-export interface ConnectOverXWingOptions extends ServiceIdOptions {
+/**
+ * Whether an identity signs with ML-DSA: Dilithium (ML-DSA-87) or hybrid (Ed25519 + ML-DSA-87) key manager. Ed25519,
+ * FIDO2 and passport identities are not post-quantum signers.
+ */
+export function isPostQuantumPeer(identity: VaultysId): boolean {
+  return identity.keyManager instanceof DilithiumManager || identity.keyManager instanceof HybridManager;
+}
+
+/** Same as isPostQuantumPeer, on a serialized id (pk1 / pk2 of a challenge). Never throws. */
+function isPostQuantumPeerId(id: Uint8Array | undefined): boolean {
+  if (!(id instanceof Uint8Array)) return false;
+  try {
+    return isPostQuantumPeer(VaultysId.fromId(Buffer.from(Uint8Array.from(id))));
+  } catch {
+    return false;
+  }
+}
+
+export interface PostQuantumPeerOption {
+  /**
+   * Refuse a peer whose identity does not sign with ML-DSA (Dilithium or hybrid), with PEER_NOT_PQ. Checked on the
+   * identity that signed the peer's message BEFORE this side signs anything (STEP1 for the responder, COMPLETE for the
+   * initiator): nothing is signed for a classical peer. Default false (compatibility).
+   */
+  requirePostQuantumPeer?: boolean;
+}
+
+export interface ConnectOverXWingOptions extends ServiceIdOptions, PostQuantumPeerOption {
   /**
    * Expected identity of the responder (an anchor the service publishes, or the identity pinned at the first
    * connection). Compared with the identity that signs STEP1 BEFORE signing COMPLETE; mismatch: PEER_MISMATCH.
@@ -415,7 +444,7 @@ export interface ConnectOverXWingOptions extends ServiceIdOptions {
   timeoutMs?: number;
 }
 
-export interface AcceptOverXWingOptions extends ServiceIdOptions {
+export interface AcceptOverXWingOptions extends ServiceIdOptions, PostQuantumPeerOption {
   timeoutMs?: number;
 }
 
@@ -426,8 +455,9 @@ export interface XWingHandshakeResult {
   readonly channel: XWingChannel;
 }
 
-function checkHandshakeArguments(serviceId: string, metadata: Record<string, string>, options: ServiceIdOptions): void {
+function checkHandshakeArguments(serviceId: string, metadata: Record<string, string>, options: ServiceIdOptions & PostQuantumPeerOption): void {
   if (typeof options !== "object" || options === null) throw new ChannelError("INVALID_ARGUMENT");
+  if (options.requirePostQuantumPeer !== undefined && typeof options.requirePostQuantumPeer !== "boolean") throw new ChannelError("INVALID_ARGUMENT");
   // the service id must already be canonical: never normalized silently here
   if (!isCanonicalServiceId(serviceId, options)) throw new ChannelError("INVALID_SERVICE_ID");
   if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) throw new ChannelError("INVALID_ARGUMENT");
@@ -498,6 +528,8 @@ export async function connectOverXWing(idManager: IdManager, channel: Channel, s
   // checked BEFORE signing: the responder must have signed OUR transcript and the SAME service
   if (parsed.metadata?.pk2?.[BINDING_METADATA_KEY] !== binding) return abort(session, "BINDING_MISMATCH");
   if (parsed.metadata.pk2[SERVICE_METADATA_KEY] !== serviceId) return abort(session, "SERVICE_MISMATCH");
+  // pk2 is the identity whose signature deserializeCertificate verified; checked before update() signs COMPLETE
+  if (options.requirePostQuantumPeer === true && !isPostQuantumPeerId(parsed.pk2)) return abort(session, "PEER_NOT_PQ");
   try {
     await challenger.update(Buffer.from(step1));
   } catch {
@@ -534,6 +566,8 @@ export async function acceptOverXWing(idManager: IdManager, channel: Channel, se
   // checked BEFORE signing STEP1
   if (parsed.metadata?.pk1?.[BINDING_METADATA_KEY] !== binding) return abort(session, "BINDING_MISMATCH");
   if (parsed.metadata.pk1[SERVICE_METADATA_KEY] !== serviceId) return abort(session, "SERVICE_MISMATCH");
+  // INIT carries no signature: the initiator proves its key with COMPLETE, which Challenger verifies against this pk1
+  if (options.requirePostQuantumPeer === true && !isPostQuantumPeerId(parsed.pk1)) return abort(session, "PEER_NOT_PQ");
   const challenger = new Challenger(idManager.vaultysId);
   try {
     await challenger.update(Buffer.from(init), { ...metadata, [BINDING_METADATA_KEY]: binding, [SERVICE_METADATA_KEY]: serviceId });

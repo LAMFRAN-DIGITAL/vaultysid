@@ -99,9 +99,6 @@ func TestDeriveVectors(t *testing.T) {
 		if err != nil || hex.EncodeToString(entropy) != d.Entropy {
 			t.Errorf("entropy mismatch for %s %s %s: %v", d.Service, d.Alg, d.TypeName, err)
 		}
-		if d.Alg == "dilithium_ed25519" || pq {
-			continue // hybrid and post-quantum types are not implemented in Go on this branch
-		}
 		id, err := Derive(master, d.Service, opts)
 		if err != nil {
 			t.Fatalf("Derive(%s, %s): %v", d.Service, d.Alg, err)
@@ -118,8 +115,9 @@ func TestDeriveVectors(t *testing.T) {
 		}
 		checked++
 	}
-	if checked < 6 {
-		t.Fatalf("only %d identities checked", checked)
+	// every vector, hybrid (dilithium_ed25519) and post-quantum types included
+	if checked != len(v.Derive) || checked < 16 {
+		t.Fatalf("only %d of %d identities checked", checked, len(v.Derive))
 	}
 }
 
@@ -189,6 +187,71 @@ func TestAnchorVectors(t *testing.T) {
 		raw, _ := hex.DecodeString(a.Anchor)
 		if VerifyAnchor(raw, a.ServiceID) != nil {
 			t.Errorf("invalid anchor accepted: %s", a.Name)
+		}
+	}
+}
+
+// Anchors of hybrid (dilithium_ed25519) service identities, made by TypeScript:
+// Go verifies them, derives the same identity from the same master, and builds
+// the same anchor up to the signature (hedged ML-DSA in Go, deterministic in
+// the vectors), which then verifies too.
+func TestHybridAnchorVectors(t *testing.T) {
+	var v struct {
+		Hybrid struct {
+			Alg   string `json:"alg"`
+			Role  string `json:"role"`
+			Valid []struct {
+				ServiceID       string `json:"serviceId"`
+				PostQuantum     bool   `json:"postQuantum"`
+				Type            int    `json:"type"`
+				DID             string `json:"did"`
+				IDSha256        string `json:"idSha256"`
+				SignatureLength int    `json:"signatureLength"`
+				Anchor          string `json:"anchor"`
+			} `json:"valid"`
+			Invalid []struct {
+				Name      string `json:"name"`
+				ServiceID string `json:"serviceId"`
+				Anchor    string `json:"anchor"`
+			} `json:"invalid"`
+		} `json:"hybrid"`
+	}
+	readJSON(t, "service-anchor-vectors.json", &v)
+	if v.Hybrid.Alg != "dilithium_ed25519" || len(v.Hybrid.Valid) != 2 || len(v.Hybrid.Invalid) < 4 {
+		t.Fatalf("unexpected hybrid anchor vectors: %s, %d valid, %d invalid", v.Hybrid.Alg, len(v.Hybrid.Valid), len(v.Hybrid.Invalid))
+	}
+	sum := sha256.Sum256([]byte("vaultysid/test/anchors/service"))
+	master := sum[:]
+	for _, a := range v.Hybrid.Valid {
+		raw, _ := hex.DecodeString(a.Anchor)
+		id := VerifyAnchor(raw, a.ServiceID)
+		if id == nil || id.DID() != a.DID {
+			t.Fatalf("hybrid anchor refused for %s (post-quantum %v)", a.ServiceID, a.PostQuantum)
+		}
+		service, err := Derive(master, a.ServiceID, Options{Alg: v.Hybrid.Alg, Role: v.Hybrid.Role, PostQuantum: a.PostQuantum})
+		if err != nil {
+			t.Fatal(err)
+		}
+		idSum := sha256.Sum256(service.ToBytes())
+		if service.DID() != a.DID || int(service.Type) != a.Type || hex.EncodeToString(idSum[:]) != a.IDSha256 {
+			t.Fatalf("Go derives another hybrid identity: %s, want %s", service.DID(), a.DID)
+		}
+		mine, err := CreateAnchor(service, a.ServiceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unsignedLength := len(raw) - a.SignatureLength
+		if len(mine) != len(raw) || !bytes.Equal(mine[:unsignedLength], raw[:unsignedLength]) {
+			t.Fatal("Go hybrid anchor differs from TypeScript before the signature")
+		}
+		if VerifyAnchor(mine, a.ServiceID) == nil {
+			t.Fatal("Go hybrid anchor refused")
+		}
+	}
+	for _, a := range v.Hybrid.Invalid {
+		raw, _ := hex.DecodeString(a.Anchor)
+		if VerifyAnchor(raw, a.ServiceID) != nil {
+			t.Errorf("invalid hybrid anchor accepted: %s", a.Name)
 		}
 	}
 }

@@ -57,6 +57,7 @@ const (
 	CodeBindingMismatch  = "BINDING_MISMATCH"
 	CodeServiceMismatch  = "SERVICE_MISMATCH"
 	CodePeerMismatch     = "PEER_MISMATCH"
+	CodePeerNotPQ        = "PEER_NOT_PQ"
 	CodeHandshakeFailed  = "HANDSHAKE_FAILED"
 )
 

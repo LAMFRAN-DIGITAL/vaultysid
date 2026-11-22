@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/vaultys/vaultysid/go/pkg/challenger"
+	"github.com/vaultys/vaultysid/go/pkg/keymanager"
 	"github.com/vaultys/vaultysid/go/pkg/serviceid"
 	"github.com/vaultys/vaultysid/go/pkg/vaultysid"
 )
@@ -28,6 +29,12 @@ type HandshakeOptions struct {
 	Timeout time.Duration
 	// AllowDevelopmentHosts, as for serviceid.CanonicalServiceID.
 	AllowDevelopmentHosts bool
+	// RequirePostQuantumPeer refuses, with PEER_NOT_PQ, a peer whose identity
+	// does not sign with ML-DSA (Dilithium or hybrid). Checked on the identity
+	// of the peer's message BEFORE this side signs anything (STEP1 for the
+	// responder, COMPLETE for the initiator): nothing is signed for a classical
+	// peer. Default false (compatibility).
+	RequirePostQuantumPeer bool
 }
 
 // Result of a bound handshake. The caller stores Contact and Certificate (for
@@ -49,6 +56,27 @@ func Fingerprint(identity *vaultysid.VaultysID) ([]byte, error) {
 	}
 	sum := sha256.Sum256(c.ToBytes())
 	return sum[:], nil
+}
+
+// IsPostQuantumPeer reports whether an identity signs with ML-DSA: Dilithium
+// (ML-DSA-87) or hybrid (Ed25519 + ML-DSA-87) key manager. Ed25519 and FIDO2
+// identities are not post-quantum signers.
+func IsPostQuantumPeer(identity *vaultysid.VaultysID) bool {
+	if identity == nil {
+		return false
+	}
+	switch identity.KeyManager.(type) {
+	case *keymanager.DilithiumManager, *keymanager.HybridManager:
+		return true
+	default:
+		return false
+	}
+}
+
+// isPostQuantumPeerID is IsPostQuantumPeer on a serialized id (PK1 / PK2).
+func isPostQuantumPeerID(id []byte) bool {
+	peer, err := vaultysid.FromID(id, nil)
+	return err == nil && IsPostQuantumPeer(peer)
 }
 
 func checkArguments(serviceID string, metadata map[string]string, allowDev bool) error {
@@ -157,6 +185,10 @@ func ConnectOverXWing(self *vaultysid.VaultysID, t Transport, serviceID string, 
 	if v, ok := step1.Metadata.PK2.Get(ServiceMetadataKey); !ok || v != serviceID {
 		return nil, abort(s, CodeServiceMismatch)
 	}
+	// PK2 is the identity whose sign2 Deserialize verified; checked before Step2 signs COMPLETE.
+	if opts.RequirePostQuantumPeer && !isPostQuantumPeerID(step1.PK2) {
+		return nil, abort(s, CodePeerNotPQ)
+	}
 	if expected != nil {
 		peer, err := vaultysid.FromID(step1.PK2, nil)
 		if err != nil {
@@ -214,6 +246,10 @@ func AcceptOverXWing(self *vaultysid.VaultysID, t Transport, serviceID string, m
 	}
 	if v, ok := init.Metadata.PK1.Get(ServiceMetadataKey); !ok || v != serviceID {
 		return nil, abort(s, CodeServiceMismatch)
+	}
+	// INIT carries no signature: the initiator proves PK1 with COMPLETE, which Finalize verifies.
+	if opts.RequirePostQuantumPeer && !isPostQuantumPeerID(init.PK1) {
+		return nil, abort(s, CodePeerNotPQ)
 	}
 	c := challenger.New(self)
 	for k, v := range metadata {
