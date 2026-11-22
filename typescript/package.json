@@ -46,7 +46,8 @@
     "test:anchor:vectors": "tsx test/interops/generate-service-anchor-vectors.ts",
     "test:pq:vectors": "tsx test/interops/generate-pq-identity-vectors.ts",
     "test:legacy:vectors": "tsx test/interops/generate-legacy-v3-vectors.ts",
-    "test:hybrid:vectors": "tsx test/interops/generate-hybrid-handshake-vectors.ts"
+    "test:hybrid:vectors": "tsx test/interops/generate-hybrid-handshake-vectors.ts",
+    "test:contact-pq:vectors": "tsx test/interops/generate-contact-pq-vectors.ts"
   },
   "keywords": [],
   "author": "",
