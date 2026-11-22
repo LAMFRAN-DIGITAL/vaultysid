@@ -1,6 +1,6 @@
 # Request for Comments: VaultysID Service Identities
 
-**Status:** Draft, for review. Implemented in the TypeScript reference implementation (`typescript/src/serviceIdentity.ts`, `serviceAnchor.ts`), which generates the test vectors of §7 and §8.5. Go (`go/pkg/serviceid`) and Rust (`rust/src/service_identity.rs`) pass the same vectors; on this branch Go derives Ed25519 and Dilithium identities and Rust Ed25519 ones (hybrid and post-quantum types arrive with the Go and Rust post-quantum identity work).
+**Status:** Draft, for review. Implemented in the TypeScript reference implementation (`typescript/src/serviceIdentity.ts`, `serviceAnchor.ts`), which generates the test vectors of §7 and §8.5. Go (`go/pkg/serviceid`) passes all of them: it derives Ed25519, Dilithium and hybrid (`dilithium_ed25519`) identities, of the classical and of the post-quantum types (`0x10 | role`), and verifies Ed25519 and hybrid anchors. Rust (`rust/src/service_identity.rs`) derives and checks the Ed25519 ones only.
 
 ## 1. Introduction
 
@@ -140,4 +140,4 @@ An attacker who controls the origin's web server, or obtains a fraudulent TLS ce
 
 ### 8.5. Test vectors
 
-`typescript/test/interops/generate-service-anchor-vectors.ts` (`pnpm test:anchor:vectors`) writes `service-anchor-vectors.json`: two fixed Ed25519 anchors (one for a punycode origin) and invalid cases (another origin, header bytes, altered signature, trailing byte, truncation, empty).
+`typescript/test/interops/generate-service-anchor-vectors.ts` (`pnpm test:anchor:vectors`) writes `service-anchor-vectors.json`: two fixed Ed25519 anchors (one for a punycode origin) and invalid cases (another origin, header bytes, altered signature, trailing byte, truncation, empty). Its `hybrid` section adds the anchors of two hybrid service identities, `deriveServiceIdentity(master, "https://service-a.test", {alg: "dilithium_ed25519", role: "organization", postQuantum})` with `postQuantum` false (type `0x02`) and true (type `0x12`), with their DID and the SHA-256 of their serialized id, and four invalid hybrid anchors (Ed25519 half altered, ML-DSA half altered, signature reduced to its Ed25519 half, another origin). Hybrid identities sign with hedged ML-DSA-87; the vectors use the deterministic variant (FIPS 204, `rnd = 0`) so that the file is reproducible, and an implementation compares its own anchor with the vector up to the signature.
