@@ -15,6 +15,7 @@ import DeprecatedKeyManager from "./KeyManager/DeprecatedKeyManager";
 import PassportAAManager, { TYPE_PASSPORT_AA } from "./KeyManager/PassportAAManager";
 import { LEGACY_RECORD_KEY, LEGACY_REOPEN_DEFAULT, certificateHash, decodeV0Certificate, involves, isLegacyV3Store, legacyEntropy, recoverLegacyIdentity, storedCertificates, verifyV0CertificateSignatures } from "./legacyV3";
 import type { LegacyIdentityHint, LegacyMigrationRecord } from "./legacyV3";
+import { ContactError, isPostQuantumPeer, type PostQuantumPeerOption } from "./postQuantumPeer";
 
 /**
  * Storage key for "wot" and "signatures": `<timestamp>-<hex SHA-256(data)>`. The timestamp alone made two entries
@@ -91,6 +92,20 @@ export const instanciateApp = (a: StoredApp) => {
 // File-encryption PRFs are derived as hmac("prf|encryption/<nonce>/encryption|prf"):
 // this namespace is reserved and can't be requested by an arbitrary remote peer.
 const FILE_ENCRYPTION_PRF_PREFIX = "encryption/";
+
+/**
+ * Consent callback of askContact / acceptContact with the post-quantum peer option: the peer's key manager is checked
+ * first (ContactError PEER_NOT_PQ), then the caller's own callback. startSRP / acceptSRP call it before signing.
+ */
+function postQuantumConsent(options: PostQuantumPeerOption, accept?: (contact: VaultysId) => Promise<boolean>) {
+  if (typeof options !== "object" || options === null) throw new ContactError("INVALID_ARGUMENT");
+  if (options.requirePostQuantumPeer !== undefined && typeof options.requirePostQuantumPeer !== "boolean") throw new ContactError("INVALID_ARGUMENT");
+  if (options.requirePostQuantumPeer !== true) return accept;
+  return async (contact: VaultysId) => {
+    if (!isPostQuantumPeer(contact)) throw new ContactError("PEER_NOT_PQ");
+    return accept ? accept(contact) : true;
+  };
+}
 
 const denyAll = async () => false;
 
@@ -933,6 +948,7 @@ export default class IdManager {
       await challenger.update(message);
     } catch (error) {
       channel.send(Buffer.from([0]));
+      if (error instanceof ContactError) throw error;
       throw new Error(error as string);
     }
     if (challenger.isComplete()) {
@@ -979,6 +995,7 @@ export default class IdManager {
       await challenger.update(message, metadata);
     } catch (error) {
       channel.send(Buffer.from([0]));
+      if (error instanceof ContactError) throw error;
       throw new Error(error as string);
     }
 
@@ -1044,15 +1061,27 @@ export default class IdManager {
     }
   }
 
-  async askContact(channel: Channel, metadata: Record<string, string> = {}, accept?: (contact: VaultysId) => Promise<boolean>) {
-    const challenger = await this.startSRP(channel, "p2p", "auth", metadata, accept);
+  /**
+   * Ask for a contact (initiator of a p2p/auth handshake). With `options.requirePostQuantumPeer`, a responder whose
+   * identity does not sign with ML-DSA is refused with ContactError PEER_NOT_PQ, after its STEP1 signature is verified
+   * and BEFORE this side signs COMPLETE (rfc/PROTOCOL.md §12.1). Default off.
+   */
+  async askContact(channel: Channel, metadata: Record<string, string> = {}, accept?: (contact: VaultysId) => Promise<boolean>, options: PostQuantumPeerOption = {}) {
+    const consent = postQuantumConsent(options, accept);
+    const challenger = await this.startSRP(channel, "p2p", "auth", metadata, consent);
     const contact = challenger.getContactId();
     this.saveContact(contact);
     return contact;
   }
 
-  async acceptContact(channel: Channel, metadata: Record<string, string> = {}, accept?: (contact: VaultysId) => Promise<boolean>) {
-    const challenger = await this.acceptSRP(channel, "p2p", "auth", metadata, accept);
+  /**
+   * Accept a contact (responder of a p2p/auth handshake). With `options.requirePostQuantumPeer`, an initiator whose
+   * identity (pk1 of INIT) does not sign with ML-DSA is refused with ContactError PEER_NOT_PQ BEFORE this side signs
+   * STEP1; the initiator still has to prove that pk1 with COMPLETE (rfc/PROTOCOL.md §12.1). Default off.
+   */
+  async acceptContact(channel: Channel, metadata: Record<string, string> = {}, accept?: (contact: VaultysId) => Promise<boolean>, options: PostQuantumPeerOption = {}) {
+    const consent = postQuantumConsent(options, accept);
+    const challenger = await this.acceptSRP(channel, "p2p", "auth", metadata, consent);
     const contact = challenger.getContactId();
     this.saveContact(contact);
     return contact;

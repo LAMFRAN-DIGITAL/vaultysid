@@ -370,6 +370,29 @@ console.log(contactA.did === idManagerB.vaultysId.did); // true
 console.log(contactB.did === idManagerA.vaultysId.did); // true
 ```
 
+#### 12.1.1. Post-quantum peer required
+
+Both sides may refuse a peer whose identity does not sign with ML-DSA. The option is off by default (compatibility).
+
+```typescript
+// TypeScript: fourth argument of askContact / acceptContact
+await idManagerA.askContact(channel, metadata, accept, { requirePostQuantumPeer: true });
+await idManagerB.acceptContact(channel, metadata, accept, { requirePostQuantumPeer: true });
+```
+
+```go
+// Go: RequestConnectWithOptions / AcceptConnectWithOptions (package idmanager)
+sess, initMsg, err := managerA.RequestConnectWithOptions(nil, idmanager.ConnectOptions{RequirePostQuantumPeer: true})
+sessB, step1, err := managerB.AcceptConnectWithOptions(initMsg, accept, idmanager.ConnectOptions{RequirePostQuantumPeer: true})
+```
+
+- A **post-quantum peer** is an identity whose key manager is Dilithium (ML-DSA-87) or hybrid (Ed25519 + ML-DSA-87), whatever its type byte (classical `0x00`–`0x02` or post-quantum `0x10 | role`). Ed25519, FIDO2 and passport identities are not. The test is `isPostQuantumPeer(identity)` (TypeScript) / `xwingchannel.IsPostQuantumPeer(identity)` (Go), the same as for the X-Wing bound handshake (`rfc/SECURE-CHANNEL.md` §4).
+- The **responder** checks `pk1` of INIT after the protocol and service checks and **before** the caller's consent callback and **before signing STEP1**. INIT carries no signature: an initiator that claims a post-quantum `pk1` still has to sign COMPLETE with it, and the responder verifies that signature against the same `pk1`.
+- The **initiator** checks `pk2` of STEP1 once `sign2` has been verified against it, **before** the caller's consent callback and **before signing COMPLETE**.
+- A refused peer therefore never obtains a signature. The refusing side sends a single `0` byte and stores nothing. The error is `ContactError` with code `PEER_NOT_PQ` (TypeScript `isContactError(error, "PEER_NOT_PQ")`; Go `idmanager.IsContactCode(err, idmanager.CodePeerNotPQ)`), the same code as the X-Wing channel. A non-boolean option is refused with `INVALID_ARGUMENT` (TypeScript) before anything is sent.
+- The option protects the **authentication** of the contact (its signatures). It does not change the transport: over an unencrypted or classically encrypted channel, the exchanged identities and metadata are still exposed to a future quantum adversary; use the X-Wing bound handshake (`rfc/SECURE-CHANNEL.md`) for a post-quantum channel.
+- Cross-language vectors: `contact-pq-peer-ts-vectors.json` (TypeScript → Go, `pnpm test:contact-pq:vectors`) and `contact-pq-peer-go-vectors.json` (Go → TypeScript, `go run generate_contact_pq_vectors.go` in `go/test/compatibility`): identities of every signing algorithm with their classification, unsigned INIT messages a responder with the option must refuse (Ed25519) or let through, and a STEP1 signed by an Ed25519 responder that an initiator with the option must refuse.
+
 ### 12.2. Verifying a File Signature
 
 ```typescript

@@ -25,7 +25,7 @@ describe("public API", () => {
   });
 
   it("exports service identities and the X-Wing channel", () => {
-    for (const name of ["canonicalServiceId", "deriveServiceIdentity", "initiateXWingChannel", "acceptXWingChannel", "connectOverXWing", "acceptOverXWing", "isPostQuantumPeer"]) {
+    for (const name of ["canonicalServiceId", "deriveServiceIdentity", "initiateXWingChannel", "acceptXWingChannel", "connectOverXWing", "acceptOverXWing", "isPostQuantumPeer", "ContactError", "isContactError"]) {
       assert.strictEqual(typeof (pkg as Record<string, unknown>)[name], "function", name);
     }
   });

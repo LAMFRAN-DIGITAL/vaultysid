@@ -19,8 +19,7 @@ import Challenger, { CHALLENGE_STATE } from "./Challenger";
 import { timestampedKey } from "./IdManager";
 import type IdManager from "./IdManager";
 import type { Channel } from "./MemoryChannel";
-import DilithiumManager from "./KeyManager/DilithiumManager";
-import HybridManager from "./KeyManager/HybridManager";
+import { isPostQuantumPeerId, type PostQuantumPeerOption } from "./postQuantumPeer";
 import VaultysId from "./VaultysId";
 import { randomBytes } from "./crypto";
 import { isCanonicalServiceId, type ServiceIdOptions } from "./serviceIdentity";
@@ -406,32 +405,8 @@ export function identityFingerprint(identity: VaultysId): Uint8Array {
  */
 export const certificateKey = timestampedKey;
 
-/**
- * Whether an identity signs with ML-DSA: Dilithium (ML-DSA-87) or hybrid (Ed25519 + ML-DSA-87) key manager. Ed25519,
- * FIDO2 and passport identities are not post-quantum signers.
- */
-export function isPostQuantumPeer(identity: VaultysId): boolean {
-  return identity.keyManager instanceof DilithiumManager || identity.keyManager instanceof HybridManager;
-}
-
-/** Same as isPostQuantumPeer, on a serialized id (pk1 / pk2 of a challenge). Never throws. */
-function isPostQuantumPeerId(id: Uint8Array | undefined): boolean {
-  if (!(id instanceof Uint8Array)) return false;
-  try {
-    return isPostQuantumPeer(VaultysId.fromId(Buffer.from(Uint8Array.from(id))));
-  } catch {
-    return false;
-  }
-}
-
-export interface PostQuantumPeerOption {
-  /**
-   * Refuse a peer whose identity does not sign with ML-DSA (Dilithium or hybrid), with PEER_NOT_PQ. Checked on the
-   * identity that signed the peer's message BEFORE this side signs anything (STEP1 for the responder, COMPLETE for the
-   * initiator): nothing is signed for a classical peer. Default false (compatibility).
-   */
-  requirePostQuantumPeer?: boolean;
-}
+export { isPostQuantumPeer } from "./postQuantumPeer";
+export type { PostQuantumPeerOption } from "./postQuantumPeer";
 
 export interface ConnectOverXWingOptions extends ServiceIdOptions, PostQuantumPeerOption {
   /**
