@@ -99,9 +99,6 @@ func TestDeriveVectors(t *testing.T) {
 		if err != nil || hex.EncodeToString(entropy) != d.Entropy {
 			t.Errorf("entropy mismatch for %s %s %s: %v", d.Service, d.Alg, d.TypeName, err)
 		}
-		if d.Alg == "dilithium_ed25519" || pq {
-			continue // hybrid and post-quantum types are not implemented in Go on this branch
-		}
 		id, err := Derive(master, d.Service, opts)
 		if err != nil {
 			t.Fatalf("Derive(%s, %s): %v", d.Service, d.Alg, err)
@@ -118,8 +115,9 @@ func TestDeriveVectors(t *testing.T) {
 		}
 		checked++
 	}
-	if checked < 6 {
-		t.Fatalf("only %d identities checked", checked)
+	// every vector, hybrid (dilithium_ed25519) and post-quantum types included
+	if checked != len(v.Derive) || checked < 16 {
+		t.Fatalf("only %d of %d identities checked", checked, len(v.Derive))
 	}
 }
 
