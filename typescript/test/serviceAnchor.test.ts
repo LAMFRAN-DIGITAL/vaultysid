@@ -67,14 +67,17 @@ describe("Service anchors", () => {
 
   it("hybrid service: derived identity, anchor, expected peer and post-quantum peer required", async () => {
     const master = Uint8Array.from(Buffer.alloc(32, 7));
-    const service = new IdManager(await deriveServiceIdentity(master, SERVICE, { alg: "dilithium_ed25519", role: "organization" }), MemoryStorage(() => ""));
-    const user = new IdManager(await VaultysId.generatePerson("dilithium_ed25519"), MemoryStorage(() => ""));
+    const service = new IdManager(
+      await deriveServiceIdentity(master, SERVICE, { alg: "dilithium_ed25519", role: "organization" }),
+      MemoryStorage(() => ""),
+    );
+    const user = new IdManager(
+      await VaultysId.generatePerson("dilithium_ed25519"),
+      MemoryStorage(() => ""),
+    );
     const expected = verifyServiceAnchor(await createServiceAnchor(service.vaultysId, SERVICE), SERVICE)!;
     const a = MemoryChannel.createBidirectionnal();
-    const [left, right] = await Promise.all([
-      connectOverXWing(user, a, SERVICE, {}, { expectedPeer: expected, requirePostQuantumPeer: true }),
-      acceptOverXWing(service, a.otherend!, SERVICE, {}, { requirePostQuantumPeer: true }),
-    ]);
+    const [left, right] = await Promise.all([connectOverXWing(user, a, SERVICE, {}, { expectedPeer: expected, requirePostQuantumPeer: true }), acceptOverXWing(service, a.otherend!, SERVICE, {}, { requirePostQuantumPeer: true })]);
     assert.strictEqual(left.contact.did, service.vaultysId.did);
     assert.strictEqual(right.contact.did, user.vaultysId.did);
   });
