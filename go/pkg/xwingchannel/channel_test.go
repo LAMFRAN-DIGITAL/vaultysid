@@ -9,11 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cloudflare/circl/kem/xwing"
 	"github.com/vaultys/vaultysid/go/pkg/challenger"
+	"github.com/vaultys/vaultysid/go/pkg/keymanager"
 	"github.com/vaultys/vaultysid/go/pkg/vaultysid"
 )
 
@@ -356,6 +358,120 @@ func TestBoundHandshakeRefusals(t *testing.T) {
 		wg.Wait()
 		if !IsCode(es, CodeBindingMismatch) {
 			t.Fatal(es)
+		}
+	})
+}
+
+// countingSigner counts the signatures an identity produces (the challenger
+// signs only through VaultysID.SignHandshake, hence KeyManager.Sign).
+type countingSigner struct {
+	keymanager.KeyManager
+	count *atomic.Int32
+}
+
+func (c countingSigner) Sign(data []byte) ([]byte, error) {
+	c.count.Add(1)
+	return c.KeyManager.Sign(data)
+}
+
+func countSignatures(identity *vaultysid.VaultysID) *atomic.Int32 {
+	n := &atomic.Int32{}
+	identity.KeyManager = countingSigner{KeyManager: identity.KeyManager, count: n}
+	return n
+}
+
+func handshakeWith(user, server *vaultysid.VaultysID, uo, so HandshakeOptions) (*Result, error, *Result, error) {
+	a, b := pipe()
+	var ru, rs *Result
+	var eu, es error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); ru, eu = ConnectOverXWing(user, a, svc, nil, uo) }()
+	go func() { defer wg.Done(); rs, es = AcceptOverXWing(server, b, svc, nil, so) }()
+	wg.Wait()
+	return ru, eu, rs, es
+}
+
+func TestIsPostQuantumPeer(t *testing.T) {
+	classical, _ := vaultysid.GeneratePerson()
+	hybrid, _ := vaultysid.GeneratePersonAlg("dilithium_ed25519")
+	dilithium, _ := vaultysid.GenerateMachineAlg("dilithium")
+	entropy := bytes.Repeat([]byte{7}, 32)
+	pqType, err := vaultysid.FromEntropyAlg(entropy, vaultysid.TypePerson|0x10, "dilithium_ed25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsPostQuantumPeer(classical) || IsPostQuantumPeer(nil) {
+		t.Fatal("Ed25519 is not post-quantum")
+	}
+	for _, id := range []*vaultysid.VaultysID{hybrid, dilithium, pqType} {
+		if !IsPostQuantumPeer(id) {
+			t.Fatal("expected a post-quantum signer", id.GetType())
+		}
+		public, err := vaultysid.FromID(id.ToBytes(), nil)
+		if err != nil || !IsPostQuantumPeer(public) {
+			t.Fatal("public copy lost its key manager type", err)
+		}
+	}
+}
+
+func TestRequirePostQuantumPeer(t *testing.T) {
+	timeout := 2 * time.Second
+	required := HandshakeOptions{Timeout: timeout, RequirePostQuantumPeer: true}
+	plain := HandshakeOptions{Timeout: timeout}
+	t.Run("hybrid on both sides", func(t *testing.T) {
+		user, _ := vaultysid.GeneratePersonAlg("dilithium_ed25519")
+		server, _ := vaultysid.GenerateOrganizationAlg("dilithium_ed25519")
+		ru, eu, rs, es := handshakeWith(user, server, required, required)
+		if eu != nil || es != nil {
+			t.Fatal(eu, es)
+		}
+		if ru.Contact.DID() != server.DID() || rs.Contact.DID() != user.DID() || !IsPostQuantumPeer(ru.Contact) || !IsPostQuantumPeer(rs.Contact) {
+			t.Fatal("wrong contacts")
+		}
+	})
+	t.Run("Dilithium responder", func(t *testing.T) {
+		user, _ := vaultysid.GeneratePersonAlg("dilithium_ed25519")
+		server, _ := vaultysid.GenerateOrganizationAlg("dilithium")
+		if _, eu, _, es := handshakeWith(user, server, required, plain); eu != nil || es != nil {
+			t.Fatal(eu, es)
+		}
+	})
+	t.Run("initiator refuses an Ed25519 responder before signing COMPLETE", func(t *testing.T) {
+		user, _ := vaultysid.GeneratePersonAlg("dilithium_ed25519")
+		server, _ := vaultysid.GenerateOrganization()
+		signed := countSignatures(user)
+		_, eu, _, es := handshakeWith(user, server, required, plain)
+		if !IsCode(eu, CodePeerNotPQ) {
+			t.Fatal(eu)
+		}
+		if es == nil {
+			t.Fatal("responder must not complete")
+		}
+		if n := signed.Load(); n != 0 {
+			t.Fatalf("initiator signed %d message(s)", n)
+		}
+	})
+	t.Run("responder refuses an Ed25519 initiator before signing STEP1", func(t *testing.T) {
+		user, _ := vaultysid.GeneratePerson()
+		server, _ := vaultysid.GenerateOrganizationAlg("dilithium_ed25519")
+		signed := countSignatures(server)
+		_, eu, _, es := handshakeWith(user, server, plain, required)
+		if !IsCode(es, CodePeerNotPQ) {
+			t.Fatal(es)
+		}
+		if eu == nil {
+			t.Fatal("initiator must not complete")
+		}
+		if n := signed.Load(); n != 0 {
+			t.Fatalf("responder signed %d message(s)", n)
+		}
+	})
+	t.Run("off by default", func(t *testing.T) {
+		user, _ := vaultysid.GeneratePerson()
+		server, _ := vaultysid.GenerateOrganizationAlg("dilithium_ed25519")
+		if _, eu, _, es := handshakeWith(user, server, plain, plain); eu != nil || es != nil {
+			t.Fatal(eu, es)
 		}
 	})
 }

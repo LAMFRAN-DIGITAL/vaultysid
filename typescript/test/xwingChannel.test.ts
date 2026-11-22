@@ -6,7 +6,7 @@ import { ml_kem768_x25519 } from "@noble/post-quantum/hybrid.js";
 import { IdManager, MemoryChannel, MemoryStorage, VaultysId } from "..";
 import "./shims";
 import type { Channel } from "../src/MemoryChannel";
-import { acceptOverXWing, acceptXWingChannel, BINDING_METADATA_KEY, certificateKey, connectOverXWing, identityFingerprint, initiateXWingChannel, isChannelError, SERVICE_METADATA_KEY, type ChannelErrorCode } from "../src/xwingChannel";
+import { acceptOverXWing, acceptXWingChannel, BINDING_METADATA_KEY, certificateKey, connectOverXWing, identityFingerprint, initiateXWingChannel, isChannelError, isPostQuantumPeer, SERVICE_METADATA_KEY, type ChannelErrorCode } from "../src/xwingChannel";
 import { buildVectors, VECTORS_PATH } from "./interops/generate-xwing-channel-vectors";
 
 // rfc/SECURE-CHANNEL.md
@@ -49,6 +49,17 @@ async function pairOfChannels() {
   const tb = tap(b);
   const [initiator, responder] = await Promise.all([initiateXWingChannel(a), acceptXWingChannel(b)]);
   return { a, b, ta, tb, initiator, responder };
+}
+
+/** Counts the handshake signatures an identity produces (the Challenger signs only through signHandshake). */
+function countHandshakeSignatures(identity: VaultysId): () => number {
+  let count = 0;
+  const original = identity.signHandshake.bind(identity);
+  identity.signHandshake = async (data) => {
+    count++;
+    return original(data);
+  };
+  return () => count;
 }
 
 const newManager = async (identity?: VaultysId) =>
@@ -213,6 +224,73 @@ describe("X-Wing secure channel", () => {
       const results = await Promise.allSettled([connectOverXWing(user, toUser, SERVICE, {}, { timeoutMs: 2000 }), acceptOverXWing(service, toService.otherend!, SERVICE, {}, { timeoutMs: 2000 }), attack]);
       assert.ok(results[1].status === "rejected" && isChannelError(results[1].reason, "BINDING_MISMATCH"));
       assert.strictEqual(user.contacts.length + service.contacts.length, 0);
+    });
+  });
+
+  describe("post-quantum peer required", () => {
+    const hybrid = () => VaultysId.generatePerson("dilithium_ed25519");
+
+    it("tells post-quantum signers apart", async () => {
+      assert.strictEqual(isPostQuantumPeer(await hybrid()), true);
+      assert.strictEqual(isPostQuantumPeer(await VaultysId.generateMachine("dilithium")), true);
+      assert.strictEqual(isPostQuantumPeer(await VaultysId.generatePerson("dilithium_ed25519", true)), true);
+      assert.strictEqual(isPostQuantumPeer(await VaultysId.generatePerson()), false);
+      // public copies (as received in a challenge) keep their key manager type
+      assert.strictEqual(isPostQuantumPeer(VaultysId.fromId((await hybrid()).id)), true);
+    });
+
+    it("accepts hybrid identities on both sides", async () => {
+      const user = await newManager(await hybrid());
+      const service = await newManager(await VaultysId.generateOrganization("dilithium_ed25519"));
+      const a = MemoryChannel.createBidirectionnal();
+      const [left, right] = await Promise.all([connectOverXWing(user, a, SERVICE, {}, { requirePostQuantumPeer: true }), acceptOverXWing(service, a.otherend!, SERVICE, {}, { requirePostQuantumPeer: true })]);
+      assert.strictEqual(left.contact.did, service.vaultysId.did);
+      assert.strictEqual(right.contact.did, user.vaultysId.did);
+      assert.ok(isPostQuantumPeer(left.contact) && isPostQuantumPeer(right.contact));
+      await left.channel.send(Buffer.from("pq"));
+      assert.strictEqual((await right.channel.receive()).toString(), "pq");
+    });
+
+    it("accepts a Dilithium peer", async () => {
+      const user = await newManager(await hybrid());
+      const service = await newManager(await VaultysId.generateOrganization("dilithium"));
+      const a = MemoryChannel.createBidirectionnal();
+      const [left] = await Promise.all([connectOverXWing(user, a, SERVICE, {}, { requirePostQuantumPeer: true }), acceptOverXWing(service, a.otherend!, SERVICE)]);
+      assert.strictEqual(left.contact.did, service.vaultysId.did);
+    });
+
+    it("initiator: refuses an Ed25519 responder before signing COMPLETE", async () => {
+      const user = await newManager(await hybrid());
+      const service = await newManager(await VaultysId.generateOrganization());
+      const signed = countHandshakeSignatures(user.vaultysId);
+      const a = MemoryChannel.createBidirectionnal();
+      const results = await Promise.allSettled([connectOverXWing(user, a, SERVICE, {}, { requirePostQuantumPeer: true, timeoutMs: 2000 }), acceptOverXWing(service, a.otherend!, SERVICE, {}, { timeoutMs: 2000 })]);
+      assert.ok(results[0].status === "rejected" && isChannelError(results[0].reason, "PEER_NOT_PQ"), String(results[0].status === "rejected" && results[0].reason));
+      assert.strictEqual(results[1].status, "rejected");
+      assert.strictEqual(signed(), 0);
+      assert.strictEqual(user.contacts.length + service.contacts.length, 0);
+    });
+
+    it("responder: refuses an Ed25519 initiator before signing STEP1", async () => {
+      const user = await newManager();
+      const service = await newManager(await VaultysId.generateOrganization("dilithium_ed25519"));
+      const signed = countHandshakeSignatures(service.vaultysId);
+      const a = MemoryChannel.createBidirectionnal();
+      const results = await Promise.allSettled([connectOverXWing(user, a, SERVICE, {}, { timeoutMs: 2000 }), acceptOverXWing(service, a.otherend!, SERVICE, {}, { requirePostQuantumPeer: true, timeoutMs: 2000 })]);
+      assert.ok(results[1].status === "rejected" && isChannelError(results[1].reason, "PEER_NOT_PQ"), String(results[1].status === "rejected" && results[1].reason));
+      assert.strictEqual(results[0].status, "rejected");
+      assert.strictEqual(signed(), 0);
+      assert.strictEqual(user.contacts.length + service.contacts.length, 0);
+    });
+
+    it("is off by default and refuses a non-boolean value", async () => {
+      const user = await newManager();
+      const service = await newManager(await hybrid());
+      const a = MemoryChannel.createBidirectionnal();
+      const [left] = await Promise.all([connectOverXWing(user, a, SERVICE), acceptOverXWing(service, a.otherend!, SERVICE)]);
+      assert.strictEqual(left.contact.did, service.vaultysId.did);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await expectCode(connectOverXWing(user, MemoryChannel.createBidirectionnal(), SERVICE, {}, { requirePostQuantumPeer: "yes" as any }), "INVALID_ARGUMENT");
     });
   });
 
