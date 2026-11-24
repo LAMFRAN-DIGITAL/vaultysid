@@ -212,7 +212,7 @@ connection string, so that both parties use the same infrastructure.
 PeerJS channel (`@vaultys/channel-peerjs`):
 
 ```
-vaultys://peerjs?key=<64 hex>&host=<signalling host>[&port=<1-65535>][&path=</path>][&secure=0][&ice=<base64url(JSON)>]
+vaultys://peerjs?key=<64 hex>&host=<signalling host>[&port=<1-65535>][&path=</path>][&secure=0][&service=<service id>][&ice=<base64url(JSON)>]
 ```
 
 | Parameter | Meaning |
@@ -220,6 +220,7 @@ vaultys://peerjs?key=<64 hex>&host=<signalling host>[&port=<1-65535>][&path=</pa
 | `key` | 32-byte shared secret (hex). It derives both peer identifiers and encrypts the channel (`CryptoChannel`). |
 | `host`, `port`, `path`, `secure` | PeerJS signalling server. `secure=0` disables TLS (development only). |
 | `ice` | base64url of a JSON array of ICE servers (`[{ "urls": "stun:…" }, { "urls": "turns:…", "username": "…", "credential": "…" }]`), at most 4, `stun:`, `stuns:`, `turn:`, `turns:` URLs only. Absent: the WebRTC library defaults (public STUN/TURN servers). `[]`: no STUN/TURN at all. |
+| `service` | Canonical service id of the initiator, a web origin (`rfc/SERVICE-IDENTITIES.md` §3.2), URL-encoded. Optional. It tells the receiver which origin to fetch the service anchor from (`rfc/SERVICE-IDENTITIES.md` §8) and which service id to bind the handshake to (`rfc/SECURE-CHANNEL.md` §4). It is a **claim**, never a proof: see below. |
 
 Receivers that do not know a parameter ignore it and keep their previous behaviour.
 
@@ -230,6 +231,11 @@ Security and privacy considerations:
 - The signalling server and the STUN/TURN servers learn the IP address of each peer, and TURN servers relay the
   (encrypted) traffic. Default public servers are third parties: an initiator that cares about privacy SHOULD give its
   own `host` and `ice`.
+- `service` is a claim made by whoever shows the QR code. A receiver that uses it MUST check that it is canonical
+  (refused, never normalized), MUST fetch and verify the anchor of that origin (§8.3 of `rfc/SERVICE-IDENTITIES.md`),
+  and MUST run the bound handshake with that service id and the anchor's identity as the expected peer, so that the
+  handshake fails (`PEER_MISMATCH`) if another identity answers. Without an anchor, the receiver MUST refuse instead of
+  connecting to an unproven origin. A `service` given twice makes the whole string invalid.
 - The channel key is a bearer secret: whoever reads the QR code can join the channel. The handshake (section 4) still
   authenticates both identities; the channel encryption only protects the transport.
 
