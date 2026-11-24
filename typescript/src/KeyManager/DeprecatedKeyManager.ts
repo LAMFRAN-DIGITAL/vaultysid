@@ -223,6 +223,7 @@ export default class DeprecatedKeyManager {
     km.cypher = {
       publicKey: obj.cypher.publicKey.data ? Buffer.from(obj.cypher.publicKey.data) : Buffer.from(obj.cypher.publicKey),
     };
+    km.capability = "public"; // instantiated from stored public data only
     return km;
   }
 

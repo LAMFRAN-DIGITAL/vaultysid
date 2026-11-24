@@ -394,7 +394,8 @@ export default class IdManager {
     let verified = true;
     for (const certid of this.store.substore("wot").list()) {
       const cert = this.store.substore("wot").get(certid);
-      verified = verified && (await this.verifyStoredCertificate(cert));
+      // older versions of listCertificates() overwrote the raw certificate with { ...deserialized, raw }
+      verified = verified && (await this.verifyStoredCertificate(cert?.raw ?? cert));
       //if (!verified) console.log(Challenger.deserializeCertificate(cert));
     }
     //console.log("wot", verified);
@@ -909,12 +910,11 @@ export default class IdManager {
       if (c.timestamp) {
         return c;
       } else {
-        const result = {
-          ...Challenger.deserializeCertificate(wot.get(timestamp)),
+        // read-only: the raw certificate must stay in the store for verifyWebOfTrust
+        return {
+          ...Challenger.deserializeCertificate(c),
           raw: c,
         };
-        wot.set(timestamp, result);
-        return result;
       }
     });
   }
@@ -1042,6 +1042,7 @@ export default class IdManager {
           serverId: app.id.toString("base64"),
           certificate: app.certificate,
         } as StoredApp);
+        this.store.save();
       }
     }
   }
