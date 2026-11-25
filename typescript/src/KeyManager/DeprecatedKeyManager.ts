@@ -1,16 +1,15 @@
 import { dearmorAndDecrypt, encryptAndArmor } from "@vaultys/saltpack";
 import { hash, hmac, randomBytes, secureErase } from "../crypto";
 import { Buffer } from "buffer/";
-import nacl, { BoxKeyPair } from "tweetnacl";
+import { BoxKeyPair, boxKeyPairFromSecretKey, scalarMult } from "../nacl";
 import { decode, encode } from "@msgpack/msgpack";
-import * as bip32fix from "@stricahq/bip32ed25519";
+import { Bip32PrivateKey, Bip32PublicKey, PublicKey, HARDENED_OFFSET } from "@stricahq/bip32ed25519";
+import { hmac as nobleHmac } from "@noble/hashes/hmac.js";
+import { sha512 as nobleSha512 } from "@noble/hashes/sha2.js";
 import KeyManager from "./AbstractKeyManager";
 import { getCypherPublicKeyFromId } from "./CypherManager";
 import { dhiesV2Decrypt, dhiesV2Encrypt } from "./dhies";
 import { decodeRecord, readVersion, requireBytes } from "./validation";
-
-//@ts-expect-error fix for wrong way of exporting bip32ed25519
-const bip32 = bip32fix.default ?? bip32fix;
 
 const LEVEL_ROOT = 1;
 const LEVEL_DERIVED = 2;
@@ -26,21 +25,55 @@ const serializeID_v0 = (km: DeprecatedKeyManager) => {
   return Buffer.concat([version, proof, sign, cypher]);
 };
 
-export const publicDerivePath = (node: InstanceType<typeof bip32.Bip32PublicKey>, path: string) => {
-  let result = node;
-  if (path.startsWith("m/")) path = path.slice(2);
-  path.split("/").forEach((d) => {
-    if (d[d.length - 1] == "'") result = result.derive(2147483648 + parseInt(d.substring(0, d.length - 1)));
-    else result = result.derive(parseInt(d));
-  });
-  return result;
+const leToBigInt = (bytes: Uint8Array) => bytes.reduceRight((acc, b) => (acc << 8n) | BigInt(b), 0n);
+const bigIntToLe = (value: bigint, length: number) => {
+  const out = new Uint8Array(length);
+  for (let i = 0; i < length; i++, value >>= 8n) out[i] = Number(value & 0xffn);
+  return out;
 };
 
-export const privateDerivePath = (node: InstanceType<typeof bip32.Bip32PrivateKey>, path: string) => {
+/**
+ * The child that @stricahq/bip32ed25519 1.x returned for derive(NaN): the hardened branch of
+ * ed25519-bip32 (HMAC over kL ‖ kR), with the 4-byte index written as 0 instead of 2^31. Wallets
+ * created before 4.0 reached it through the empty first segment of the path "/0'", so their
+ * signing keys depend on it. 2.x rejects a non-integer index, and no standard index reaches this
+ * child, so it is computed here, with the same arithmetic as 1.x (kL + 8·ZL[0..28], kR + ZR mod
+ * 2^256). test/deprecatedDerivation.test.ts pins the result against the published 2.4.10 package.
+ */
+const legacyDeriveNaN = (node: Bip32PrivateKey) => {
+  const xprv = node.toBytes();
+  const kl = xprv.subarray(0, 32);
+  const kr = xprv.subarray(32, 64);
+  const cc = xprv.subarray(64, 96);
+  const data = new Uint8Array(1 + 64 + 4); // index bytes stay 0
+  data.set(kl, 1);
+  data.set(kr, 33);
+  data[0] = 0x00;
+  const z = nobleHmac(nobleSha512, cc, data);
+  data[0] = 0x01;
+  const i = nobleHmac(nobleSha512, cc, data);
+  const left = leToBigInt(kl) + 8n * leToBigInt(z.subarray(0, 28));
+  if (left >> 256n) throw new Error("legacy derivation: kL overflow");
+  const right = (leToBigInt(kr) + leToBigInt(z.subarray(32, 64))) & ((1n << 256n) - 1n);
+  const child = new Uint8Array(96);
+  child.set(bigIntToLe(left, 32), 0);
+  child.set(bigIntToLe(right, 32), 32);
+  child.set(i.subarray(32, 64), 64);
+  return Bip32PrivateKey.fromBytes(child);
+};
+
+export const publicDerivePath = (node: Bip32PublicKey, path: string) => node.derivePath(path);
+
+/**
+ * Derives a path with the 1.x semantics: an empty segment (as in "/0'") is the legacy derive(NaN)
+ * step, a segment ending in ' is hardened.
+ */
+export const privateDerivePath = (node: Bip32PrivateKey, path: string) => {
   let result = node;
   if (path.startsWith("m/")) path = path.slice(2);
   path.split("/").forEach((d) => {
-    if (d[d.length - 1] == "'") result = result.derive(2147483648 + parseInt(d.substring(0, d.length - 1)));
+    if (d === "") result = legacyDeriveNaN(result);
+    else if (d[d.length - 1] == "'") result = result.derive(HARDENED_OFFSET + parseInt(d.substring(0, d.length - 1)));
     else result = result.derive(parseInt(d));
   });
   return result;
@@ -89,22 +122,22 @@ export default class DeprecatedKeyManager {
     km.level = LEVEL_ROOT;
     km.capability = "private";
     const seed = sha512(entropy);
-    const derivedKey = privateDerivePath(await bip32.Bip32PrivateKey.fromEntropy(seed.slice(0, 32)), `m/1'/0'/${swapIndex}'`);
+    const derivedKey = privateDerivePath(await Bip32PrivateKey.fromEntropy(seed.slice(0, 32)), `m/1'/0'/${swapIndex}'`);
     km.proofKey = {
-      publicKey: derivedKey.toBip32PublicKey().toPublicKey().toBytes(),
-      secretKey: derivedKey.toBytes(),
+      publicKey: Buffer.from(derivedKey.toBip32PublicKey().toPublicKey().toBytes()),
+      secretKey: Buffer.from(derivedKey.toBytes()),
     };
     km.swapIndex = swapIndex;
     km.proof = hash("sha256", km.proofKey.publicKey);
     const privateKey = privateDerivePath(derivedKey, "/0'");
     km.signer = {
-      publicKey: privateKey.toBip32PublicKey().toPublicKey().toBytes(),
-      secretKey: privateKey.toBytes(),
+      publicKey: Buffer.from(privateKey.toBip32PublicKey().toPublicKey().toBytes()),
+      secretKey: Buffer.from(privateKey.toBytes()),
     };
     const swapIndexBuffer = Buffer.alloc(8);
     swapIndexBuffer.writeBigInt64LE(BigInt(swapIndex) as unknown as number, 0);
     const seed2 = sha256(Buffer.concat([seed.slice(32, 64), swapIndexBuffer]));
-    const cypher = nacl.box.keyPair.fromSecretKey(seed2);
+    const cypher = boxKeyPairFromSecretKey(seed2);
     km.cypher = {
       publicKey: Buffer.from(cypher.publicKey),
       secretKey: Buffer.from(cypher.secretKey),
@@ -136,14 +169,15 @@ export default class DeprecatedKeyManager {
       hmac: (message: string) => (cypher.secretKey ? hmac("sha256", Buffer.from(Buffer.from(cypher.secretKey).toString("hex"), "utf-8"), "VaultysID/" + message + "/end") : undefined),
       signcrypt: async (plaintext: string, publicKeys: Buffer[]) => encryptAndArmor(plaintext, cypher as BoxKeyPair, publicKeys),
       decrypt: async (encryptedMessage: string, senderKey?: Buffer | null) => dearmorAndDecrypt(encryptedMessage, cypher as BoxKeyPair, senderKey),
-      diffieHellman: async (publicKey: Buffer) => Buffer.from(nacl.scalarMult(cypher.secretKey!, publicKey)),
+      diffieHellman: async (publicKey: Buffer) => Buffer.from(scalarMult(cypher.secretKey!, publicKey)),
     };
   }
 
   async getSigner() {
     // todo fetch secretKey here
     const secretKey = this.signer.secretKey!;
-    return new bip32.Bip32PrivateKey(secretKey).toPrivateKey();
+    const privateKey = Bip32PrivateKey.fromBytes(secretKey).toPrivateKey();
+    return { sign: async (data: Buffer) => Buffer.from(privateKey.sign(data)) };
   }
 
   getSecret() {
@@ -168,9 +202,9 @@ export default class DeprecatedKeyManager {
     km.proof = data.p === undefined ? undefined : requireBytes(data.p, "legacy proof");
     km.signer = {
       secretKey: x,
-      publicKey: new bip32.Bip32PrivateKey(x).toBip32PublicKey().toPublicKey().toBytes(),
+      publicKey: Buffer.from(Bip32PrivateKey.fromBytes(x).toBip32PublicKey().toPublicKey().toBytes()),
     };
-    const cypher = nacl.box.keyPair.fromSecretKey(e);
+    const cypher = boxKeyPairFromSecretKey(e);
     km.cypher = {
       publicKey: Buffer.from(cypher.publicKey),
       secretKey: Buffer.from(cypher.secretKey),
@@ -189,6 +223,7 @@ export default class DeprecatedKeyManager {
     km.cypher = {
       publicKey: obj.cypher.publicKey.data ? Buffer.from(obj.cypher.publicKey.data) : Buffer.from(obj.cypher.publicKey),
     };
+    km.capability = "public"; // instantiated from stored public data only
     return km;
   }
 
@@ -218,7 +253,7 @@ export default class DeprecatedKeyManager {
   verify(data: Buffer, signature: Buffer, userVerificationIgnored?: boolean): boolean {
     try {
       // console.log(this.signer.publicKey, data, signature);
-      return bip32.Bip32PublicKey.fromBytes(this.signer.publicKey).toPublicKey().verify(signature, data);
+      return new PublicKey(this.signer.publicKey).verify(signature, data);
     } catch (error) {
       // console.log(error);
       // console.log(this);
@@ -259,7 +294,7 @@ export default class DeprecatedKeyManager {
       const timestampBuffer = Buffer.alloc(8);
       timestampBuffer.writeBigUInt64LE(BigInt(hiscp.timestamp) as unknown as number, 0);
       const hiscpBuffer = Buffer.concat([hiscp.newId, hiscp.proofKey, timestampBuffer]);
-      hiscp.signature = new bip32.Bip32PrivateKey(this.proofKey.secretKey!).toPrivateKey().sign(hiscpBuffer);
+      hiscp.signature = Buffer.from(Bip32PrivateKey.fromBytes(this.proofKey.secretKey!).toPrivateKey().sign(hiscpBuffer));
       return hiscp;
     }
     return null;
@@ -272,8 +307,7 @@ export default class DeprecatedKeyManager {
       timestampBuffer.writeBigUInt64LE(BigInt(hiscp.timestamp) as unknown as number, 0);
       const newKey = DeprecatedKeyManager.fromId(hiscp.newId);
       const hiscpBuffer = Buffer.concat([hiscp.newId, hiscp.proofKey, timestampBuffer]);
-      const proofVerifier = bip32.Bip32PublicKey.fromBytes(hiscp.proofKey);
-      return proofVerifier.toPublicKey().verify(hiscpBuffer, hiscp.signature);
+      return new PublicKey(hiscp.proofKey).verify(hiscp.signature, hiscpBuffer);
     } else {
       return false;
     }

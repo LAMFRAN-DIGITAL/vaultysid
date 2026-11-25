@@ -1,0 +1,8 @@
+allowBuilds:
+  esbuild: true
+
+# Failles de mocha 12.0.3 (dernière version) : glob 13 (GHSA-3g3m-2fjr-6pw4) et minimatch 10 (GHSA-g3hv-75wg-m249).
+# Versions corrigées imposées ; à retirer quand mocha les demandera lui-même.
+overrides:
+  glob: 14.0.6
+  minimatch: 11.0.9

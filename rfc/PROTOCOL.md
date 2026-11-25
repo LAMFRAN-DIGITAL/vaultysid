@@ -62,6 +62,8 @@ The challenge progresses through the following states:
 
 Only `version = 1` challenges are valid. Implementations MUST reject any other version; the legacy version 0 encoding has been removed because it did not sign metadata and allowed downgrades.
 
+Migrating a wallet written by 3.x is the one exception, and it never applies to a received certificate: when an implementation migrates such a store, it MAY record the version 0 certificates the store already holds, involving the store's own identity and whose signatures verify under the 3.x rules, and keep treating exactly those as valid relationship certificates. A version 0 handshake signature is `sign(SHA-256("VAULTYS_SIGN" || v0 encoding))`, the domain of `signChallenge`, so a version 0 certificate obtained after the migration MUST NOT be accepted.
+
 ### 3.3. State Transitions
 
 Implementations MUST enforce exactly the following transitions. Any other combination of local state and received message MUST move the session to `ERROR`.
@@ -200,6 +202,43 @@ interface StreamChannel {
 }
 ```
 
+### 7.4. Channel Connection Strings
+
+A channel is usually opened by one party (the *initiator*, e.g. a website) and joined by the other (the *receiver*,
+e.g. a mobile application scanning a QR code). The initiator publishes a **connection string**; the receiver builds its
+channel from it with `fromConnectionString`. Everything the receiver needs to reach the initiator MUST be in the
+connection string, so that both parties use the same infrastructure.
+
+PeerJS channel (`@vaultys/channel-peerjs`):
+
+```
+vaultys://peerjs?key=<64 hex>&host=<signalling host>[&port=<1-65535>][&path=</path>][&secure=0][&origin=<service id>][&ice=<base64url(JSON)>]
+```
+
+| Parameter | Meaning |
+|---|---|
+| `key` | 32-byte shared secret (hex). It derives both peer identifiers and encrypts the channel (`CryptoChannel`). |
+| `host`, `port`, `path`, `secure` | PeerJS signalling server. `secure=0` disables TLS (development only). |
+| `ice` | base64url of a JSON array of ICE servers (`[{ "urls": "stun:…" }, { "urls": "turns:…", "username": "…", "credential": "…" }]`), at most 4, `stun:`, `stuns:`, `turn:`, `turns:` URLs only. Absent: the WebRTC library defaults (public STUN/TURN servers). `[]`: no STUN/TURN at all. |
+| `origin` | Canonical service id of the initiator, a web origin (`rfc/SERVICE-IDENTITIES.md` §3.2), URL-encoded. Optional. Not named `service`: Vaultys applications already read `service` (with `protocol`, `v`, `id`, `name`) as handshake hints, `service=auth`. It tells the receiver which origin to fetch the service anchor from (`rfc/SERVICE-IDENTITIES.md` §8) and which service id to bind the handshake to (`rfc/SECURE-CHANNEL.md` §4). It is a **claim**, never a proof: see below. |
+
+Receivers that do not know a parameter ignore it and keep their previous behaviour.
+
+Security and privacy considerations:
+
+- A connection string read from a QR code is untrusted input. A receiver MUST validate every parameter and MUST
+  refuse the whole string when one is invalid; it MUST NOT fall back silently to other servers.
+- The signalling server and the STUN/TURN servers learn the IP address of each peer, and TURN servers relay the
+  (encrypted) traffic. Default public servers are third parties: an initiator that cares about privacy SHOULD give its
+  own `host` and `ice`.
+- `origin` is a claim made by whoever shows the QR code. A receiver that uses it MUST check that it is canonical
+  (refused, never normalized), MUST fetch and verify the anchor of that origin (§8.3 of `rfc/SERVICE-IDENTITIES.md`),
+  and MUST run the bound handshake with that service id and the anchor's identity as the expected peer, so that the
+  handshake fails (`PEER_MISMATCH`) if another identity answers. Without an anchor, the receiver MUST refuse instead of
+  connecting to an unproven origin. An `origin` given twice makes the whole string invalid.
+- The channel key is a bearer secret: whoever reads the QR code can join the channel. The handshake (section 4) still
+  authenticates both identities; the channel encryption only protects the transport.
+
 ## 8. Web of Trust Operations
 
 ### 8.1. Contact Management
@@ -336,6 +375,29 @@ const contactB = await idManagerB.acceptContact(channel);
 console.log(contactA.did === idManagerB.vaultysId.did); // true
 console.log(contactB.did === idManagerA.vaultysId.did); // true
 ```
+
+#### 12.1.1. Post-quantum peer required
+
+Both sides may refuse a peer whose identity does not sign with ML-DSA. The option is off by default (compatibility).
+
+```typescript
+// TypeScript: fourth argument of askContact / acceptContact
+await idManagerA.askContact(channel, metadata, accept, { requirePostQuantumPeer: true });
+await idManagerB.acceptContact(channel, metadata, accept, { requirePostQuantumPeer: true });
+```
+
+```go
+// Go: RequestConnectWithOptions / AcceptConnectWithOptions (package idmanager)
+sess, initMsg, err := managerA.RequestConnectWithOptions(nil, idmanager.ConnectOptions{RequirePostQuantumPeer: true})
+sessB, step1, err := managerB.AcceptConnectWithOptions(initMsg, accept, idmanager.ConnectOptions{RequirePostQuantumPeer: true})
+```
+
+- A **post-quantum peer** is an identity whose key manager is Dilithium (ML-DSA-87) or hybrid (Ed25519 + ML-DSA-87), whatever its type byte (classical `0x00`–`0x02` or post-quantum `0x10 | role`). Ed25519, FIDO2 and passport identities are not. The test is `isPostQuantumPeer(identity)` (TypeScript) / `xwingchannel.IsPostQuantumPeer(identity)` (Go), the same as for the X-Wing bound handshake (`rfc/SECURE-CHANNEL.md` §4).
+- The **responder** checks `pk1` of INIT after the protocol and service checks and **before** the caller's consent callback and **before signing STEP1**. INIT carries no signature: an initiator that claims a post-quantum `pk1` still has to sign COMPLETE with it, and the responder verifies that signature against the same `pk1`.
+- The **initiator** checks `pk2` of STEP1 once `sign2` has been verified against it, **before** the caller's consent callback and **before signing COMPLETE**.
+- A refused peer therefore never obtains a signature. The refusing side sends a single `0` byte and stores nothing. The error is `ContactError` with code `PEER_NOT_PQ` (TypeScript `isContactError(error, "PEER_NOT_PQ")`; Go `idmanager.IsContactCode(err, idmanager.CodePeerNotPQ)`), the same code as the X-Wing channel. A non-boolean option is refused with `INVALID_ARGUMENT` (TypeScript) before anything is sent.
+- The option protects the **authentication** of the contact (its signatures). It does not change the transport: over an unencrypted or classically encrypted channel, the exchanged identities and metadata are still exposed to a future quantum adversary; use the X-Wing bound handshake (`rfc/SECURE-CHANNEL.md`) for a post-quantum channel.
+- Cross-language vectors: `contact-pq-peer-ts-vectors.json` (TypeScript → Go, `pnpm test:contact-pq:vectors`) and `contact-pq-peer-go-vectors.json` (Go → TypeScript, `go run generate_contact_pq_vectors.go` in `go/test/compatibility`): identities of every signing algorithm with their classification, unsigned INIT messages a responder with the option must refuse (Ed25519) or let through, and a STEP1 signed by an Ed25519 responder that an initiator with the option must refuse.
 
 ### 12.2. Verifying a File Signature
 

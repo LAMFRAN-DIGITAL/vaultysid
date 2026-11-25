@@ -1,20 +1,22 @@
-import { hash, randomBytes } from "../crypto";
+import { hash, randomBytes, secureErase } from "../crypto";
 import { Buffer } from "buffer/";
-import nacl from "tweetnacl";
+import { boxKeyPairFromSecretKey } from "../nacl";
 import { decode, encode } from "@msgpack/msgpack";
 import { generateDilithiumKeyPair, signDilithium, verifyDilithium } from "../pqCrypto";
 import CypherManager from "./CypherManager";
 import { DILITHIUM_PK_LENGTH } from "./DilithiumManager";
 import { decodeRecord, readVersion, requireBytes } from "./validation";
+import { MLKEM768_PK_LENGTH } from "../pqCrypto";
 import { KeyPair } from ".";
 import { ed25519 } from "@noble/curves/ed25519.js";
 
 const sha512 = (data: Buffer) => hash("sha512", data);
 
 type DataExport = {
-  v: 0; // version
+  v: 0 | 1; // version
   x: Buffer; // signing
   e: Buffer; // encrypting
+  k?: Buffer; // ML-KEM-768 encapsulation key, post-quantum identities only
 };
 
 type SecretExport = {
@@ -48,7 +50,7 @@ export default class HybridManager extends CypherManager {
       publicKey: Buffer.concat([km.edSigner.publicKey, km.pqSigner.publicKey]),
       secretKey: Buffer.concat([km.edSigner.secretKey!, km.pqSigner.secretKey!]),
     };
-    const cypher = nacl.box.keyPair.fromSecretKey(km.seed.slice(32, 64));
+    const cypher = boxKeyPairFromSecretKey(km.seed.slice(32, 64));
     km.cypher = {
       publicKey: Buffer.from(cypher.publicKey),
       secretKey: Buffer.from(cypher.secretKey),
@@ -71,13 +73,23 @@ export default class HybridManager extends CypherManager {
   }
 
   get id() {
-    return Buffer.from(
-      encode({
-        v: this.version,
-        x: this.signer.publicKey,
-        e: this.cypher.publicKey,
-      }),
-    );
+    const data: DataExport = {
+      v: this.version,
+      x: this.signer.publicKey,
+      e: this.cypher.publicKey,
+    };
+    if (this.kem) data.k = this.kem.publicKey;
+    return Buffer.from(encode(data));
+  }
+
+  /**
+   * Derive the ML-KEM-768 key pair and the PRF key from the seed, making this
+   * the key manager of a post-quantum identity (rfc/PQ-ENCRYPTION.md §3).
+   */
+  enablePostQuantum() {
+    if (!this.seed) throw new Error("a seed is required to derive post-quantum keys");
+    this.derivePostQuantumKeys(this.seed);
+    return this;
   }
 
   static fromSecret(secret: Buffer) {
@@ -98,7 +110,7 @@ export default class HybridManager extends CypherManager {
       secretKey: Buffer.concat([km.edSigner.secretKey!, km.pqSigner.secretKey!]),
     };
     //km.signer = generateDilithiumKeyPair(km.seed.slice(0, 32));
-    const cypher = nacl.box.keyPair.fromSecretKey(km.seed.slice(32, 64));
+    const cypher = boxKeyPairFromSecretKey(km.seed.slice(32, 64));
     km.cypher = {
       publicKey: Buffer.from(cypher.publicKey),
       secretKey: Buffer.from(cypher.secretKey),
@@ -121,7 +133,25 @@ export default class HybridManager extends CypherManager {
     km.cypher = {
       publicKey: obj.cypher.publicKey.data ? Buffer.from(obj.cypher.publicKey.data) : Buffer.from(obj.cypher.publicKey),
     };
+    if (obj.kem?.publicKey) {
+      km.kem = {
+        publicKey: obj.kem.publicKey.data ? Buffer.from(obj.kem.publicKey.data) : Buffer.from(obj.kem.publicKey),
+      };
+    }
+    km.capability = "public"; // instantiated from stored public data only
     return km;
+  }
+
+  cleanSecureData() {
+    for (const secret of [this.seed, this.edSigner?.secretKey, this.pqSigner?.secretKey, this.signer?.secretKey]) {
+      if (secret) secureErase(secret);
+    }
+    delete this.seed;
+    if (this.edSigner) delete this.edSigner.secretKey;
+    if (this.pqSigner) delete this.pqSigner.secretKey;
+    if (this.signer) delete this.signer.secretKey;
+    this.capability = "public";
+    super.cleanSecureData();
   }
 
   static fromId(id: Buffer) {
@@ -142,7 +172,9 @@ export default class HybridManager extends CypherManager {
     km.cypher = {
       publicKey: requireBytes(data.e, "X25519 public key", 32),
     };
-    // console.log(km)
+    if (data.k !== undefined) {
+      km.kem = { publicKey: requireBytes(data.k, "ML-KEM-768 public key", MLKEM768_PK_LENGTH) };
+    }
     return km;
   }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/vaultys/vaultysid/go/pkg/challenger"
 	"github.com/vaultys/vaultysid/go/pkg/crypto"
 	"github.com/vaultys/vaultysid/go/pkg/vaultysid"
+	"github.com/vaultys/vaultysid/go/pkg/xwingchannel"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -780,6 +781,35 @@ const (
 	ConnectService  = "auth"
 )
 
+// CodePeerNotPQ is the ContactError code of a peer refused by
+// ConnectOptions.RequirePostQuantumPeer: the same code as the X-Wing bound
+// handshake (xwingchannel.CodePeerNotPQ) and as TypeScript's
+// askContact / acceptContact.
+const CodePeerNotPQ = xwingchannel.CodePeerNotPQ
+
+// ContactError is returned by the connect (contact) handshake when an option
+// refuses the peer. Test it with IsContactCode.
+type ContactError struct{ Code string }
+
+func (e *ContactError) Error() string { return "contact: " + e.Code }
+
+// IsContactCode reports whether err is (or wraps) a ContactError with that code.
+func IsContactCode(err error, code string) bool {
+	var e *ContactError
+	return errors.As(err, &e) && e.Code == code
+}
+
+// ConnectOptions configures RequestConnectWithOptions / AcceptConnectWithOptions.
+type ConnectOptions struct {
+	// RequirePostQuantumPeer refuses, with ContactError PEER_NOT_PQ, a peer
+	// whose identity does not sign with ML-DSA (Dilithium or hybrid, see
+	// xwingchannel.IsPostQuantumPeer). Checked BEFORE this side signs anything:
+	// the responder checks pk1 of INIT before signing STEP1, the initiator
+	// checks pk2 of STEP1, once its sign2 is verified, before signing COMPLETE.
+	// Default false (compatibility). rfc/PROTOCOL.md §12.1.
+	RequirePostQuantumPeer bool
+}
+
 // ConnectSession is one side of a RequestConnect / AcceptConnect handshake.
 //
 // The connection is a plain mutual-authentication handshake (protocol
@@ -797,12 +827,21 @@ type ConnectSession struct {
 // plus the INIT message to send. If contact is non-nil, the handshake only
 // completes with that exact identity.
 func (m *Manager) RequestConnect(contact *vaultysid.VaultysID) (*ConnectSession, []byte, error) {
+	return m.RequestConnectWithOptions(contact, ConnectOptions{})
+}
+
+// RequestConnectWithOptions is RequestConnect with options (see ConnectOptions).
+func (m *Manager) RequestConnectWithOptions(contact *vaultysid.VaultysID, opts ConnectOptions) (*ConnectSession, []byte, error) {
 	s := &ConnectSession{manager: m}
 	if contact != nil {
 		s.expected = contact.ID()
 	}
 	s.ch = challenger.NewChallenger(m.vaultysID, &challenger.ChallengerOptions{
+		// called by Step2 once sign2 is verified, before sign1 (COMPLETE) is produced
 		Accept: func(remote *vaultysid.VaultysID, protocol, service string) error {
+			if opts.RequirePostQuantumPeer && !xwingchannel.IsPostQuantumPeer(remote) {
+				return &ContactError{Code: CodePeerNotPQ}
+			}
 			if s.expected != nil && !bytes.Equal(remote.ID(), s.expected) {
 				return fmt.Errorf("remote is not the requested contact")
 			}
@@ -846,6 +885,13 @@ func (s *ConnectSession) Complete(step1 []byte) ([]byte, *vaultysid.VaultysID, e
 // INIT for protocol "p2p" / service "auth". accept, if non-nil, is given
 // the REMOTE (initiator's) identity and may refuse it.
 func (m *Manager) AcceptConnect(initMsg []byte, accept func(remote *vaultysid.VaultysID) error) (*ConnectSession, []byte, error) {
+	return m.AcceptConnectWithOptions(initMsg, accept, ConnectOptions{})
+}
+
+// AcceptConnectWithOptions is AcceptConnect with options (see ConnectOptions).
+// The post-quantum check runs on pk1 of INIT before accept and before STEP1
+// is signed; INIT carries no signature, the initiator proves pk1 with COMPLETE.
+func (m *Manager) AcceptConnectWithOptions(initMsg []byte, accept func(remote *vaultysid.VaultysID) error, opts ConnectOptions) (*ConnectSession, []byte, error) {
 	init, err := challenger.Deserialize(initMsg)
 	if err != nil {
 		return nil, nil, err
@@ -855,6 +901,15 @@ func (m *Manager) AcceptConnect(initMsg []byte, accept func(remote *vaultysid.Va
 	}
 	if init.Protocol != ConnectProtocol || init.Service != ConnectService {
 		return nil, nil, fmt.Errorf("unexpected protocol/service %q/%q", init.Protocol, init.Service)
+	}
+	if opts.RequirePostQuantumPeer {
+		peer, err := vaultysid.FromID(init.PK1, nil)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid INIT: unparseable pk1: %w", err)
+		}
+		if !xwingchannel.IsPostQuantumPeer(peer) {
+			return nil, nil, &ContactError{Code: CodePeerNotPQ}
+		}
 	}
 	s := &ConnectSession{manager: m}
 	s.ch = challenger.NewChallenger(m.vaultysID, &challenger.ChallengerOptions{

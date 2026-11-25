@@ -1,12 +1,12 @@
 import { secureErase } from "../crypto";
 import cbor from "cbor";
-import nacl from "tweetnacl";
+import { boxKeyPairFromSecretKey } from "../nacl";
 import SoftCredentials from "../platform/SoftCredentials";
 import { KeyPair } from ".";
 import { decode, encode } from "@msgpack/msgpack";
 import Fido2Manager from "./Fido2Manager";
 import { Buffer } from "buffer/";
-import { PQ_COSE_ALG, PQ_COSE_KEY_PARAMS } from "../pqCrypto";
+import { PQ_COSE_ALG, PQ_COSE_KEY_PARAMS, PQ_COSE_KEY_TYPE } from "../pqCrypto";
 import { decodeRecord, readVersion, requireBytes } from "./validation";
 
 declare global {
@@ -44,6 +44,8 @@ const getAuthTypeFromCkey = (ckey: Buffer) => {
     return "Ed25519VerificationKey2020";
   } else if (type === 2) {
     return "P256VerificationKey2020";
+  } else if (type === PQ_COSE_KEY_TYPE.DILITHIUM) {
+    return "DilithiumVerificationKey2025";
   } else return "Unknown";
 };
 
@@ -154,7 +156,7 @@ export default class Fido2PRFManager extends Fido2Manager {
       const { prf } = result.getClientExtensionResults();
       const first = prf?.results?.first;
       if (!first) throw new Error("PRF failed");
-      const cypher = nacl.box.keyPair.fromSecretKey(new Uint8Array(first as any));
+      const cypher = boxKeyPairFromSecretKey(new Uint8Array(first as any));
       this.cypher = {
         publicKey: Buffer.from(cypher.publicKey),
         secretKey: Buffer.from(cypher.secretKey),
